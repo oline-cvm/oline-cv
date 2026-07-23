@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.pt
+*.task
+*_analysis.json
+*_overlay.mp4
+*_web.mp4
+uploads/
+outputs/
+.pytest_cache/
+.mypy_cache/
