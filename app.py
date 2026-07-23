@@ -1,4 +1,4 @@
-"""OLINE dashboard — FastAPI app for pass-set analysis."""
+"""OLINE dashboard — FastAPI."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from oline_cv.config import AnalysisConfig
@@ -23,11 +23,10 @@ STATIC_DIR = ROOT / "dashboard"
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="OLINE", description="Offensive lineman pass-set analysis")
+app = FastAPI(title="OLINE")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/outputs", StaticFiles(directory=OUTPUT_DIR), name="outputs")
 
-# In-memory job store
 JOBS: dict[str, dict[str, Any]] = {}
 
 
@@ -41,11 +40,48 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _pack_result(
+    jersey: int | None, result: dict[str, Any], web_path: str | None, json_name: str | None
+) -> dict:
+    s = result.get("rep_summary", {})
+    q = result.get("initial_quicks", {})
+    snap = result.get("snap", {})
+    return {
+        "jersey": jersey if jersey is not None else s.get("target_jersey"),
+        "ol_lock": result.get("ol_lock") or s.get("ol_lock"),
+        "play_type": result.get("play_type", s.get("play_type")),
+        "snap_frame": snap.get("snap_frame"),
+        "reaction_time_ms": s.get("reaction_time_ms"),
+        "reaction_time_frames": s.get("reaction_time_frames"),
+        "initiated_by": s.get("initiated_by"),
+        "late_off_the_ball": s.get("late_off_the_ball"),
+        "posture_classification": s.get("posture_classification"),
+        "mean_knee_flexion_deg": s.get("mean_knee_flexion_deg"),
+        "mean_torso_angle_deg": s.get("mean_torso_angle_deg"),
+        "hip_height_at_lowest": s.get("hip_height_at_lowest"),
+        "step_cadence_hz": s.get("step_cadence_hz"),
+        "set_depth": s.get("set_depth"),
+        "set_width": s.get("set_width"),
+        "mean_base_width": s.get("mean_base_width"),
+        "lateral_match": s.get("lateral_match"),
+        "anchor_give": s.get("anchor_give"),
+        "punch_ms": s.get("punch_ms"),
+        "engagement_ms": s.get("engagement_ms"),
+        "coach_language": s.get("coach_language", []),
+        "modules": result.get("modules", {}),
+        "video_fps": result.get("video", {}).get("fps"),
+        "overlay_url": f"/outputs/{Path(web_path).name}" if web_path else None,
+        "json_url": f"/outputs/{json_name}" if json_name else None,
+        "notes": q.get("notes", []),
+    }
+
+
 @app.post("/api/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    jersey: int = Form(76),
+    jersey: str = Form(""),
+    play_type: str = Form("pass"),
     snap_frame: int | None = Form(None),
 ) -> JSONResponse:
     job_id = uuid.uuid4().hex[:12]
@@ -54,16 +90,19 @@ async def analyze(
     with video_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    jersey_i: int | None = None
+    if str(jersey).strip().isdigit():
+        jersey_i = int(str(jersey).strip())
+
     JOBS[job_id] = {
         "id": job_id,
         "status": "queued",
-        "jersey": jersey,
+        "jersey": jersey_i,
         "progress": "Queued",
         "result": None,
         "error": None,
     }
-
-    background_tasks.add_task(_run_job, job_id, str(video_path), jersey, snap_frame)
+    background_tasks.add_task(_run_job, job_id, str(video_path), jersey_i, play_type, snap_frame)
     return JSONResponse({"job_id": job_id})
 
 
@@ -75,61 +114,33 @@ def job_status(job_id: str) -> JSONResponse:
     return JSONResponse(job)
 
 
-def _run_job(job_id: str, video_path: str, jersey: int, snap_frame: int | None) -> None:
+def _run_job(
+    job_id: str,
+    video_path: str,
+    jersey: int | None,
+    play_type: str,
+    snap_frame: int | None,
+) -> None:
     job = JOBS[job_id]
     try:
         job["status"] = "running"
-        job["progress"] = f"Tracking #{jersey}…"
-
+        job["progress"] = "Detecting offensive lineman…"
         out_json = str(OUTPUT_DIR / f"{job_id}_analysis.json")
         out_overlay = str(OUTPUT_DIR / f"{job_id}_overlay.mp4")
-
         cfg = AnalysisConfig(
             target_jersey=jersey,
             write_overlay_video=True,
             overlay_zoom_on_athlete=True,
-            pose_model="yolov8n-pose.pt",
+            play_type="run" if play_type == "run" else "pass",
+            pose_model="yolov8m-pose.pt",
         )
-        if jersey == 76 and cfg.athlete_pick_xy is None:
-            cfg.athlete_pick_xy = (0.272, 0.53)
         if snap_frame is not None:
             cfg.snap_frame_override = snap_frame
 
-        result = analyze_video(
-            video_path,
-            config=cfg,
-            output_json=out_json,
-            overlay_path=out_overlay,
-        )
-
+        result = analyze_video(video_path, config=cfg, output_json=out_json, overlay_path=out_overlay)
         job["progress"] = "Encoding preview…"
         web_path = ensure_web_mp4(out_overlay, str(OUTPUT_DIR / f"{job_id}_web.mp4"))
-
-        summary = result.get("rep_summary", {})
-        quicks = result.get("initial_quicks", {})
-        snap = result.get("snap", {})
-
-        job["result"] = {
-            "jersey": jersey,
-            "snap_frame": snap.get("snap_frame"),
-            "reaction_time_ms": summary.get("reaction_time_ms"),
-            "reaction_time_frames": summary.get("reaction_time_frames"),
-            "initiated_by": summary.get("initiated_by"),
-            "posture_classification": summary.get("posture_classification"),
-            "mean_knee_flexion_deg": summary.get("mean_knee_flexion_deg"),
-            "min_knee_flexion_deg": summary.get("min_knee_flexion_deg"),
-            "mean_torso_angle_deg": summary.get("mean_torso_angle_deg"),
-            "max_torso_angle_deg": summary.get("max_torso_angle_deg"),
-            "hip_height_at_lowest": summary.get("hip_height_at_lowest"),
-            "mean_hip_height": summary.get("mean_hip_height"),
-            "first_foot_movement_frame": quicks.get("first_foot_movement_frame"),
-            "first_hip_movement_frame": quicks.get("first_hip_movement_frame"),
-            "posture_frame_counts": summary.get("posture_frame_counts"),
-            "video_fps": result.get("video", {}).get("fps"),
-            "overlay_url": f"/outputs/{Path(web_path).name}",
-            "json_url": f"/outputs/{Path(out_json).name}",
-            "notes": quicks.get("notes", []),
-        }
+        job["result"] = _pack_result(jersey, result, web_path, Path(out_json).name)
         job["status"] = "done"
         job["progress"] = "Done"
     except Exception as exc:
@@ -140,35 +151,10 @@ def _run_job(job_id: str, video_path: str, jersey: int, snap_frame: int | None) 
 
 @app.get("/api/demo")
 def demo_existing() -> JSONResponse:
-    """Load last local footage analysis if present."""
     local = ROOT / "footage_analysis.json"
     overlay = ROOT / "footage_overlay.mp4"
     if not local.exists():
         return JSONResponse({"error": "no_demo"}, status_code=404)
     data = json.loads(local.read_text(encoding="utf-8"))
     web = ensure_web_mp4(str(overlay), str(OUTPUT_DIR / "footage_web.mp4")) if overlay.exists() else None
-    s = data.get("rep_summary", {})
-    q = data.get("initial_quicks", {})
-    return JSONResponse(
-        {
-            "jersey": 76,
-            "snap_frame": data.get("snap", {}).get("snap_frame"),
-            "reaction_time_ms": s.get("reaction_time_ms"),
-            "reaction_time_frames": s.get("reaction_time_frames"),
-            "initiated_by": s.get("initiated_by"),
-            "posture_classification": s.get("posture_classification"),
-            "mean_knee_flexion_deg": s.get("mean_knee_flexion_deg"),
-            "min_knee_flexion_deg": s.get("min_knee_flexion_deg"),
-            "mean_torso_angle_deg": s.get("mean_torso_angle_deg"),
-            "max_torso_angle_deg": s.get("max_torso_angle_deg"),
-            "hip_height_at_lowest": s.get("hip_height_at_lowest"),
-            "mean_hip_height": s.get("mean_hip_height"),
-            "first_foot_movement_frame": q.get("first_foot_movement_frame"),
-            "first_hip_movement_frame": q.get("first_hip_movement_frame"),
-            "posture_frame_counts": s.get("posture_frame_counts"),
-            "video_fps": data.get("video", {}).get("fps"),
-            "overlay_url": f"/outputs/{Path(web).name}" if web else None,
-            "json_url": None,
-            "notes": q.get("notes", []),
-        }
-    )
+    return JSONResponse(_pack_result(data.get("target_jersey"), data, web, None))

@@ -1,26 +1,26 @@
-"""YOLO pose tracking locked to a single athlete (e.g. #76).
+"""YOLO pose tracking locked to one auto-detected offensive lineman.
 
-After the first lock, inference runs on a padded crop around that player only —
-other people on the field are never posed.
+After lock, inference uses a padded crop around that OL. The nearest other
+person in-crop is treated as the matchup defender (mirror / hands / anchor).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 from ultralytics import YOLO
 
 from oline_cv.config import AnalysisConfig, KEYPOINT_NAMES
+from oline_cv.ol_select import lock_ol_from_frames
 
 
 @dataclass
 class FramePose:
     frame_idx: int
     timestamp_ms: float
-    keypoints_xy: np.ndarray  # (17, 2) full-frame coords
-    keypoints_conf: np.ndarray  # (17,)
+    keypoints_xy: np.ndarray
+    keypoints_conf: np.ndarray
     bbox_xyxy: np.ndarray | None
     person_confidence: float
     low_confidence: bool
@@ -28,24 +28,23 @@ class FramePose:
 
 
 class PoseTracker:
-    """Track exactly one offensive lineman; ignore everyone else."""
-
     def __init__(self, config: AnalysisConfig):
         self.config = config
-        model_name = config.pose_model
-        if model_name in ("mediapipe-pose", "", None):
-            model_name = "yolov8n-pose.pt"
+        model_name = config.pose_model or "yolov8m-pose.pt"
+        if model_name in ("mediapipe-pose",):
+            model_name = "yolov8m-pose.pt"
         self.model = YOLO(model_name)
         self._anchor_center: np.ndarray | None = None
         self._anchor_bbox: np.ndarray | None = None
+        self._dl_center: np.ndarray | None = None
         self._pick_xy: tuple[float, float] | None = config.athlete_pick_xy
-        # Default pick for jersey #76 (LT) on elevated All-22 / sideline film
-        if self._pick_xy is None and config.target_jersey == 76:
-            self._pick_xy = (0.272, 0.53)
+        self.lock_meta: dict = {}
 
     def extract_all(
         self, video_path: str
-    ) -> tuple[float, int, int, int, list[FramePose], list[np.ndarray]]:
+    ) -> tuple[float, int, int, int, list[FramePose], list[FramePose | None], list[np.ndarray]]:
+        import cv2
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise RuntimeError(f"Could not open video: {video_path}")
@@ -54,28 +53,44 @@ class PoseTracker:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        poses: list[FramePose] = []
         frames: list[np.ndarray] = []
-        idx = 0
-        try:
-            while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                frames.append(frame)
-                poses.append(self._infer_frame(frame, idx, fps))
-                idx += 1
-                if idx % 30 == 0:
-                    print(f"  pose {idx} frames...", flush=True)
-        finally:
-            cap.release()
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames.append(frame)
+        cap.release()
 
-        return fps, len(frames), width, height, poses, frames
+        # Auto-lock OL unless user provided an explicit click
+        if self._pick_xy is not None:
+            self._anchor_center = np.array(
+                [self._pick_xy[0] * width, self._pick_xy[1] * height], dtype=float
+            )
+            self.lock_meta = {"method": "manual_pick_xy", "pick_xy": list(self._pick_xy)}
+            print(f"  OL lock: manual pick {self._pick_xy}", flush=True)
+        else:
+            center, bbox, meta = lock_ol_from_frames(self.model, frames, self.config)
+            self._anchor_center = center
+            self._anchor_bbox = bbox
+            self.lock_meta = meta
+            print(
+                f"  OL lock: {meta.get('method')} score={meta.get('score'):.2f} "
+                f"knee={meta.get('knee_flex')} @ ({center[0]:.0f},{center[1]:.0f})",
+                flush=True,
+            )
 
-    def _crop_around_anchor(
-        self, frame: np.ndarray
-    ) -> tuple[np.ndarray, int, int] | None:
-        """Return (crop, offset_x, offset_y) tightly around the locked athlete."""
+        ol_poses: list[FramePose] = []
+        dl_poses: list[FramePose | None] = []
+        for idx, frame in enumerate(frames):
+            ol, dl = self._infer_frame(frame, idx, fps)
+            ol_poses.append(ol)
+            dl_poses.append(dl)
+            if (idx + 1) % 30 == 0:
+                print(f"  pose {idx + 1} frames...", flush=True)
+
+        return fps, len(frames), width, height, ol_poses, dl_poses, frames
+
+    def _crop_around_anchor(self, frame: np.ndarray):
         if self._anchor_bbox is None:
             return None
         h, w = frame.shape[:2]
@@ -91,9 +106,8 @@ class PoseTracker:
             return None
         return frame[cy0:cy1, cx0:cx1].copy(), cx0, cy0
 
-    def _infer_frame(self, frame: np.ndarray, idx: int, fps: float) -> FramePose:
-        ts = (idx / fps) * 1000.0 if fps > 0 else 0.0
-        empty = FramePose(
+    def _empty(self, idx: int, ts: float) -> FramePose:
+        return FramePose(
             frame_idx=idx,
             timestamp_ms=ts,
             keypoints_xy=np.full((17, 2), np.nan),
@@ -104,6 +118,34 @@ class PoseTracker:
             usable=False,
         )
 
+    def _pack(
+        self, idx: int, ts: float, kxy: np.ndarray, kcf: np.ndarray, bbox: np.ndarray, conf: float
+    ) -> FramePose:
+        missing = (kxy[:, 0] <= 1.0) & (kxy[:, 1] <= 1.0)
+        kcf = kcf.copy()
+        kxy = kxy.copy()
+        kcf[missing] = 0.0
+        kxy[missing] = np.nan
+        confident = int((kcf >= self.config.min_keypoint_confidence).sum())
+        ratio = confident / 17.0
+        low = ratio < self.config.min_frame_keypoint_ratio
+        usable = (not low) and conf >= self.config.min_person_confidence
+        return FramePose(
+            frame_idx=idx,
+            timestamp_ms=ts,
+            keypoints_xy=kxy,
+            keypoints_conf=kcf,
+            bbox_xyxy=bbox.astype(float),
+            person_confidence=float(conf),
+            low_confidence=low,
+            usable=usable,
+        )
+
+    def _infer_frame(
+        self, frame: np.ndarray, idx: int, fps: float
+    ) -> tuple[FramePose, FramePose | None]:
+        ts = (idx / fps) * 1000.0 if fps > 0 else 0.0
+        empty = self._empty(idx, ts)
         h, w = frame.shape[:2]
         offset = (0, 0)
         infer_img = frame
@@ -116,14 +158,13 @@ class PoseTracker:
             infer_img,
             verbose=False,
             conf=self.config.min_person_confidence,
-            imgsz=self.config.pose_imgsz if crop_info is None else min(640, self.config.pose_imgsz),
+            imgsz=self.config.pose_imgsz if crop_info is None else min(960, self.config.pose_imgsz),
         )
         if not results:
-            return empty
-
+            return empty, None
         r0 = results[0]
         if r0.keypoints is None or r0.boxes is None or len(r0.boxes) == 0:
-            return empty
+            return empty, None
 
         xy = r0.keypoints.xy.cpu().numpy().copy()
         conf = (
@@ -133,66 +174,43 @@ class PoseTracker:
         )
         box_xyxy = r0.boxes.xyxy.cpu().numpy().copy()
         box_conf = r0.boxes.conf.cpu().numpy()
-
-        # Map crop coords → full frame
         ox, oy = offset
         xy[:, :, 0] += ox
         xy[:, :, 1] += oy
         box_xyxy[:, [0, 2]] += ox
         box_xyxy[:, [1, 3]] += oy
 
-        pick = self._select_person(xy, box_xyxy, box_conf, w, h)
-        if pick is None:
-            return empty
+        ol_i = self._select_ol(box_xyxy, box_conf, w, h)
+        if ol_i is None:
+            return empty, None
 
-        kxy = xy[pick].astype(float).copy()
-        kcf = conf[pick].astype(float).copy()
-        missing = (kxy[:, 0] <= 1.0) & (kxy[:, 1] <= 1.0)
-        kcf[missing] = 0.0
-        kxy[missing] = np.nan
-
-        confident = int((kcf >= self.config.min_keypoint_confidence).sum())
-        ratio = confident / 17.0
-        low = ratio < self.config.min_frame_keypoint_ratio
-        usable = (not low) and float(box_conf[pick]) >= self.config.min_person_confidence
-
-        bbox = box_xyxy[pick].astype(float)
-        center = (bbox[:2] + bbox[2:]) / 2.0
-        if usable:
+        ol = self._pack(idx, ts, xy[ol_i], conf[ol_i], box_xyxy[ol_i], float(box_conf[ol_i]))
+        if ol.usable:
+            c = (box_xyxy[ol_i][:2] + box_xyxy[ol_i][2:]) / 2.0
             if self._anchor_center is None:
-                self._anchor_center = center
-                self._anchor_bbox = bbox
+                self._anchor_center = c
+                self._anchor_bbox = box_xyxy[ol_i].astype(float)
             else:
-                self._anchor_center = 0.75 * self._anchor_center + 0.25 * center
-                self._anchor_bbox = 0.75 * self._anchor_bbox + 0.25 * bbox
+                self._anchor_center = 0.75 * self._anchor_center + 0.25 * c
+                self._anchor_bbox = 0.75 * self._anchor_bbox + 0.25 * box_xyxy[ol_i]
 
-        return FramePose(
-            frame_idx=idx,
-            timestamp_ms=ts,
-            keypoints_xy=kxy,
-            keypoints_conf=kcf,
-            bbox_xyxy=bbox,
-            person_confidence=float(box_conf[pick]),
-            low_confidence=low,
-            usable=usable,
-        )
+        dl = None
+        if self.config.track_defender and len(box_conf) > 1:
+            dl_i = self._select_dl(box_xyxy, box_conf, ol_i)
+            if dl_i is not None:
+                dl = self._pack(idx, ts, xy[dl_i], conf[dl_i], box_xyxy[dl_i], float(box_conf[dl_i]))
+                dc = (box_xyxy[dl_i][:2] + box_xyxy[dl_i][2:]) / 2.0
+                self._dl_center = dc if self._dl_center is None else 0.7 * self._dl_center + 0.3 * dc
 
-    def _select_person(
-        self,
-        xy: np.ndarray,
-        box_xyxy: np.ndarray,
-        box_conf: np.ndarray,
-        width: int,
-        height: int,
-    ) -> int | None:
+        return ol, dl
+
+    def _select_ol(self, box_xyxy, box_conf, width, height) -> int | None:
         n = len(box_conf)
         if n == 0:
             return None
-
         centers = (box_xyxy[:, :2] + box_xyxy[:, 2:]) / 2.0
         areas = (box_xyxy[:, 2] - box_xyxy[:, 0]) * (box_xyxy[:, 3] - box_xyxy[:, 1])
 
-        # Once locked, ONLY accept the nearest detection within jump radius.
         if self._anchor_center is not None:
             dist = np.linalg.norm(centers - self._anchor_center[None, :], axis=1)
             diags = np.linalg.norm(box_xyxy[:, 2:] - box_xyxy[:, :2], axis=1)
@@ -203,30 +221,39 @@ class PoseTracker:
             valid = np.where(dist <= max_jump)[0]
             if len(valid) == 0:
                 return None
-            # Closest to anchor wins — never switch to another player nearby
             return int(valid[int(np.argmin(dist[valid]))])
 
-        # First lock: click / jersey default pick, else largest in ROI
-        x0, y0, x1, y1 = self.config.athlete_roi
-        rx0, ry0, rx1, ry1 = x0 * width, y0 * height, x1 * width, y1 * height
-        in_roi = (
-            (centers[:, 0] >= rx0)
-            & (centers[:, 0] <= rx1)
-            & (centers[:, 1] >= ry0)
-            & (centers[:, 1] <= ry1)
-        )
-
         if self._pick_xy is not None:
-            px = self._pick_xy[0] * width
-            py = self._pick_xy[1] * height
-            dist = np.linalg.norm(centers - np.array([px, py]), axis=1)
-            return int(np.argmin(dist))
+            px, py = self._pick_xy[0] * width, self._pick_xy[1] * height
+            return int(np.argmin(np.linalg.norm(centers - np.array([px, py]), axis=1)))
 
-        candidates = np.where(in_roi)[0]
-        if len(candidates) == 0:
-            candidates = np.arange(n)
-        score = areas[candidates] * box_conf[candidates]
-        return int(candidates[int(np.argmax(score))])
+        x0, y0, x1, y1 = self.config.athlete_roi
+        in_roi = (
+            (centers[:, 0] >= x0 * width)
+            & (centers[:, 0] <= x1 * width)
+            & (centers[:, 1] >= y0 * height)
+            & (centers[:, 1] <= y1 * height)
+        )
+        cand = np.where(in_roi)[0]
+        if len(cand) == 0:
+            cand = np.arange(n)
+        return int(cand[int(np.argmax(areas[cand] * box_conf[cand]))])
+
+    def _select_dl(self, box_xyxy, box_conf, ol_i: int) -> int | None:
+        centers = (box_xyxy[:, :2] + box_xyxy[:, 2:]) / 2.0
+        ol_c = centers[ol_i]
+        idxs = [i for i in range(len(box_conf)) if i != ol_i]
+        if not idxs:
+            return None
+        if self._dl_center is not None:
+            dist = np.linalg.norm(centers[idxs] - self._dl_center[None, :], axis=1)
+            # Prefer continuity, but must stay near OL
+            near_ol = np.linalg.norm(centers[idxs] - ol_c[None, :], axis=1)
+            score = -dist - 0.35 * near_ol
+            return int(idxs[int(np.argmax(score))])
+        # First DL lock: nearest other person to OL
+        dist = np.linalg.norm(centers[idxs] - ol_c[None, :], axis=1)
+        return int(idxs[int(np.argmin(dist))])
 
 
 def keypoints_as_dict(pose: FramePose) -> dict:

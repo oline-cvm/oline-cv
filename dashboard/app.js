@@ -1,158 +1,172 @@
-const form = document.getElementById("analyze-form");
-const fileInput = document.getElementById("file");
-const dropzone = document.getElementById("dropzone");
-const dropLabel = document.getElementById("drop-label");
-const runBtn = document.getElementById("run-btn");
-const demoBtn = document.getElementById("demo-btn");
-const statusEl = document.getElementById("status");
-const statusText = document.getElementById("status-text");
-const preview = document.getElementById("preview");
-const stageEmpty = document.getElementById("stage-empty");
+const $ = (id) => document.getElementById(id);
 
-dropzone.addEventListener("click", () => fileInput.click());
-dropzone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropzone.classList.add("drag");
-});
-dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
-dropzone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dropzone.classList.remove("drag");
-  if (e.dataTransfer.files?.[0]) {
-    fileInput.files = e.dataTransfer.files;
-    dropLabel.textContent = e.dataTransfer.files[0].name;
-  }
-});
-fileInput.addEventListener("change", () => {
-  if (fileInput.files?.[0]) dropLabel.textContent = fileInput.files[0].name;
+$("file").addEventListener("change", () => {
+  if ($("file").files?.[0]) $("file-label").textContent = $("file").files[0].name;
 });
 
-form.addEventListener("submit", async (e) => {
+$("form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!fileInput.files?.[0]) {
-    dropLabel.textContent = "Pick a video first";
+  if (!$("file").files?.[0]) {
+    setStatus("Pick a video first");
     return;
   }
   const fd = new FormData();
-  fd.append("file", fileInput.files[0]);
-  fd.append("jersey", document.getElementById("jersey").value || "76");
-  const snap = document.getElementById("snap").value;
+  fd.append("file", $("file").files[0]);
+  fd.append("jersey", $("jersey").value || "");
+  fd.append("play_type", $("play_type").value || "pass");
+  const snap = $("snap").value;
   if (snap !== "") fd.append("snap_frame", snap);
 
-  setBusy(true, "Uploading film…");
+  setBusy(true, "Uploading…");
   try {
     const res = await fetch("/api/analyze", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Upload failed");
-    await pollJob(data.job_id);
+    await poll(data.job_id);
   } catch (err) {
-    setBusy(false, err.message || "Failed");
-    statusEl.hidden = false;
-    statusText.textContent = err.message || "Failed";
+    setBusy(false, err.message);
   }
 });
 
-demoBtn.addEventListener("click", async () => {
-  setBusy(true, "Loading #76 result…");
+$("demo").addEventListener("click", async () => {
+  setBusy(true, "Loading…");
   try {
     const res = await fetch("/api/demo");
     const data = await res.json();
-    if (!res.ok) throw new Error("No local result yet — run an analysis first");
-    renderResult(data);
-    setBusy(false, "Loaded");
-    statusEl.hidden = true;
+    if (!res.ok) throw new Error("No local result yet");
+    render(data);
+    setBusy(false, "");
   } catch (err) {
     setBusy(false, err.message);
-    statusEl.hidden = false;
-    statusText.textContent = err.message;
   }
 });
 
-async function pollJob(jobId) {
+async function poll(id) {
   for (;;) {
-    const res = await fetch(`/api/jobs/${jobId}`);
+    const res = await fetch(`/api/jobs/${id}`);
     const job = await res.json();
-    statusText.textContent = job.progress || job.status;
+    setStatus(job.progress || job.status);
     if (job.status === "done") {
-      renderResult(job.result);
-      setBusy(false, "Done");
-      statusEl.hidden = true;
+      render(job.result);
+      setBusy(false, "");
       return;
     }
-    if (job.status === "error") {
-      throw new Error(job.error || "Analysis failed");
-    }
-    await sleep(1200);
+    if (job.status === "error") throw new Error(job.error || "Failed");
+    await new Promise((r) => setTimeout(r, 1200));
   }
 }
 
-function renderResult(r) {
-  document.getElementById("player-title").textContent = `#${r.jersey ?? 76}`;
-  document.getElementById("posture-pill").textContent =
-    (r.posture_classification || "—").replaceAll("_", " ");
+function render(r) {
+  const label =
+    r.jersey != null && r.jersey !== ""
+      ? `#${r.jersey}`
+      : "OL";
+  $("title").textContent = label;
+  const lock = r.ol_lock?.method ? ` · lock ${r.ol_lock.method}` : "";
+  $("subtitle").textContent = `${r.play_type || "pass"} · snap ${r.snap_frame ?? "—"} · ${
+    r.video_fps ? Number(r.video_fps).toFixed(0) + " fps" : ""
+  }${lock}`;
 
   const ms = r.reaction_time_ms;
-  document.getElementById("reaction-ms").textContent =
-    ms == null ? "—" : `${Math.round(ms)} ms`;
-  document.getElementById("reaction-sub").textContent =
+  $("reaction").textContent = ms == null ? "—" : `${Math.round(ms)} ms`;
+  $("reaction-s").textContent =
     r.initiated_by && r.initiated_by !== "unknown"
-      ? `${r.initiated_by}-first · ${r.reaction_time_frames ?? "—"} frames`
-      : "from snap to first move";
+      ? `${r.initiated_by}-first · ${r.reaction_time_frames ?? "—"} fr${r.late_off_the_ball ? " · late" : ""}`
+      : "snap → first move";
 
-  document.getElementById("initiated").textContent = r.initiated_by || "—";
-  document.getElementById("snap-out").textContent =
-    r.snap_frame == null ? "—" : String(r.snap_frame);
-  document.getElementById("knee").textContent = fmtDeg(r.mean_knee_flexion_deg);
-  document.getElementById("torso").textContent = fmtDeg(r.mean_torso_angle_deg);
-  document.getElementById("hip").textContent =
-    r.hip_height_at_lowest == null ? "—" : Number(r.hip_height_at_lowest).toFixed(2);
-  document.getElementById("fps").textContent =
-    r.video_fps == null ? "—" : Number(r.video_fps).toFixed(1);
+  const cells = [
+    ["Posture", pretty(r.posture_classification)],
+    ["Knee flex", deg(r.mean_knee_flexion_deg)],
+    ["Torso", deg(r.mean_torso_angle_deg)],
+    ["Hip low", num(r.hip_height_at_lowest, 2)],
+    ["Cadence", r.step_cadence_hz == null ? "—" : `${Number(r.step_cadence_hz).toFixed(1)} Hz`],
+    ["Set depth", num(r.set_depth, 2)],
+    ["Set width", num(r.set_width, 2)],
+    ["Base", num(r.mean_base_width, 2)],
+    ["Mirror r", num(r.lateral_match, 2)],
+    ["Anchor give", num(r.anchor_give, 2)],
+    ["Punch", r.punch_ms == null ? "—" : `${Math.round(r.punch_ms)} ms`],
+    ["Sustain", r.engagement_ms == null ? "—" : `${Math.round(r.engagement_ms)} ms`],
+  ];
+  $("summary-grid").innerHTML = cells
+    .map(([k, v]) => `<div class="cell"><div class="k">${k}</div><div class="v">${v}</div></div>`)
+    .join("");
 
-  const counts = r.posture_frame_counts || {};
-  const bars = document.getElementById("bars");
-  const wrap = document.getElementById("posture-bars");
-  const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
-  bars.innerHTML = "";
-  if (Object.keys(counts).length) {
-    wrap.hidden = false;
-    for (const [label, n] of Object.entries(counts)) {
-      const pct = Math.round((n / total) * 100);
-      const row = document.createElement("div");
-      row.className = "bar-row";
-      row.innerHTML = `<span>${label.replaceAll("_", " ")}</span>
-        <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
-        <span>${pct}%</span>`;
-      bars.appendChild(row);
-      requestAnimationFrame(() => {
-        row.querySelector(".bar-fill").style.width = `${pct}%`;
-      });
-    }
-  } else {
-    wrap.hidden = true;
+  const tags = $("tags");
+  tags.innerHTML = "";
+  for (const f of r.coach_language || []) {
+    const el = document.createElement("span");
+    el.className = "tag";
+    if (/late|loss|skates|gives|narrow|overset|occluded|slow|early|issue/.test(f)) el.classList.add("bad");
+    else if (/quicks|mirror|redirect|anchor|sustain|balance|wide|punch|get_off|movement/.test(f)) el.classList.add("ok");
+    else if (/bender|placement|pull|climb/.test(f)) el.classList.add("hot");
+    el.textContent = f.replaceAll("_", " ");
+    tags.appendChild(el);
   }
+
+  const mods = r.modules || {};
+  const order = [
+    ["initial_quicks", "1. Initial quicks / get-off"],
+    ["footwork", "2. Footwork"],
+    ["mirror_redirect", "3. Mirror / redirect"],
+    ["anchor", "4. Anchor"],
+    ["body_position", "5. Body position"],
+    ["hands", "6. Hands"],
+    ["sustain", "7. Sustain"],
+    ["point_of_attack", "POA (run)"],
+    ["movement_in_space", "Movement in space"],
+    ["balance", "Balance"],
+  ];
+  $("modules").innerHTML = order
+    .map(([key, title]) => moduleCard(title, mods[key]))
+    .join("");
 
   if (r.overlay_url) {
-    preview.src = r.overlay_url;
-    preview.classList.add("visible");
-    stageEmpty.classList.add("hidden");
-    preview.load();
+    $("preview").src = r.overlay_url;
+    $("preview").classList.add("on");
+    $("empty").classList.add("hide");
+    $("preview").load();
   }
 }
 
-function fmtDeg(v) {
+function moduleCard(title, data) {
+  if (!data) {
+    return `<article class="mod"><h3>${title}</h3><p class="na">not computed</p></article>`;
+  }
+  if (data.available === false) {
+    return `<article class="mod"><h3>${title}</h3><p class="na">${(data.notes || ["unavailable"]).join(", ")}</p></article>`;
+  }
+  const skip = new Set(["available", "notes", "coach_flags", "mode", "displacement_direction"]);
+  const rows = Object.entries(data)
+    .filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined && typeof v !== "object")
+    .slice(0, 8)
+    .map(([k, v]) => {
+      let show = v;
+      if (typeof v === "number") show = Number.isInteger(v) ? v : Number(v).toFixed(3);
+      if (typeof v === "boolean") show = v ? "yes" : "no";
+      return `<dt>${k.replaceAll("_", " ")}</dt><dd>${show}</dd>`;
+    })
+    .join("");
+  const flags = (data.coach_flags || []).join(", ");
+  return `<article class="mod"><h3>${title}</h3><dl>${rows || "<p class='na'>no scalars</p>"}</dl>${
+    flags ? `<p class="muted" style="margin:.6rem 0 0;font-size:.75rem">${flags}</p>` : ""
+  }</article>`;
+}
+
+function pretty(v) {
+  return v ? String(v).replaceAll("_", " ") : "—";
+}
+function deg(v) {
   return v == null ? "—" : `${Math.round(v)}°`;
 }
-
-function setBusy(busy, msg) {
-  runBtn.disabled = busy;
-  demoBtn.disabled = busy;
-  if (busy) {
-    statusEl.hidden = false;
-    statusText.textContent = msg || "Working…";
-  }
+function num(v, d) {
+  return v == null ? "—" : Number(v).toFixed(d);
 }
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function setBusy(busy, msg) {
+  $("run").disabled = busy;
+  $("demo").disabled = busy;
+  setStatus(msg || "");
+}
+function setStatus(msg) {
+  $("status").textContent = msg || "";
 }

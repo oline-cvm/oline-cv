@@ -3,112 +3,75 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OLINE — Pass Set Lab</title>
+  <title>OLINE</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="grain" aria-hidden="true"></div>
-  <header class="top">
-    <div class="brand-block">
-      <p class="eyebrow">Pass protection lab</p>
-      <h1 class="brand">OLINE</h1>
-    </div>
-    <p class="tagline">Single-player pass-set breakdown — snap reaction, pad level, posture.</p>
-  </header>
+  <div class="shell">
+    <aside class="rail">
+      <div class="logo">OLINE</div>
+      <p class="rail-note">Single-player OL breakdown<br/>Yeager framework v1</p>
 
-  <main class="layout">
-    <section class="panel upload-panel">
-      <h2>Load film</h2>
-      <p class="hint">Sideline or endzone clip. Locks onto one jersey and ignores everyone else.</p>
-
-      <form id="analyze-form">
-        <label class="drop" id="dropzone">
+      <form id="form" class="form">
+        <label class="file">
           <input type="file" id="file" accept="video/*" hidden />
-          <span class="drop-title" id="drop-label">Drop footage here</span>
-          <span class="drop-sub">MP4 · MOV · 60fps preferred</span>
+          <span id="file-label">Choose film</span>
         </label>
 
-        <div class="row">
-          <label class="field">
-            <span>Jersey</span>
-            <input type="number" id="jersey" name="jersey" value="76" min="0" max="99" />
-          </label>
-          <label class="field">
-            <span>Snap frame <em>(optional)</em></span>
-            <input type="number" id="snap" name="snap_frame" placeholder="auto" min="0" />
-          </label>
-        </div>
+        <label>Jersey <span class="opt">optional label</span>
+          <input type="number" id="jersey" placeholder="auto" min="0" max="99" />
+        </label>
 
-        <button type="submit" class="cta" id="run-btn">Analyze pass set</button>
-        <button type="button" class="ghost" id="demo-btn">Load last #76 result</button>
+        <label>Play type
+          <select id="play_type">
+            <option value="pass" selected>Pass protection</option>
+            <option value="run">Run blocking</option>
+          </select>
+        </label>
+
+        <label>Snap frame <span class="opt">optional</span>
+          <input type="number" id="snap" placeholder="auto" min="0" />
+        </label>
+
+        <button type="submit" id="run">Run</button>
+        <button type="button" class="secondary" id="demo">Last result</button>
       </form>
 
-      <div class="status" id="status" hidden>
-        <div class="status-bar"><span id="status-fill"></span></div>
-        <p id="status-text">Working…</p>
+      <p class="status" id="status"></p>
+    </aside>
+
+    <section class="main">
+      <header class="head">
+        <div>
+          <h1 id="title">OL</h1>
+          <p id="subtitle" class="muted">Model picks the lineman from pre-snap stance</p>
+        </div>
+        <div class="tags" id="tags"></div>
+      </header>
+
+      <div class="workspace">
+        <div class="viewer">
+          <video id="preview" controls playsinline></video>
+          <div class="viewer-empty" id="empty">No preview</div>
+        </div>
+
+        <div class="metrics">
+          <div class="hero">
+            <div class="k">Reaction</div>
+            <div class="v" id="reaction">—</div>
+            <div class="s" id="reaction-s">snap → first move</div>
+          </div>
+
+          <div class="grid" id="summary-grid"></div>
+        </div>
       </div>
+
+      <div class="modules" id="modules"></div>
     </section>
-
-    <section class="panel film-panel">
-      <div class="film-head">
-        <h2 id="player-title">#76</h2>
-        <span class="pill" id="posture-pill">—</span>
-      </div>
-      <div class="stage" id="stage">
-        <video id="preview" controls playsinline></video>
-        <div class="stage-empty" id="stage-empty">Upload a clip to zoom in on your lineman</div>
-      </div>
-    </section>
-
-    <section class="panel stats-panel">
-      <h2>Rep summary</h2>
-      <div class="stat-hero" id="reaction-hero">
-        <span class="stat-label">Reaction time</span>
-        <strong id="reaction-ms">—</strong>
-        <span class="stat-sub" id="reaction-sub">from snap to first move</span>
-      </div>
-
-      <div class="stat-grid">
-        <article class="stat">
-          <span class="stat-label">Initiated by</span>
-          <strong id="initiated">—</strong>
-        </article>
-        <article class="stat">
-          <span class="stat-label">Snap frame</span>
-          <strong id="snap-out">—</strong>
-        </article>
-        <article class="stat">
-          <span class="stat-label">Mean knee flex</span>
-          <strong id="knee">—</strong>
-        </article>
-        <article class="stat">
-          <span class="stat-label">Mean torso</span>
-          <strong id="torso">—</strong>
-        </article>
-        <article class="stat">
-          <span class="stat-label">Lowest hip height</span>
-          <strong id="hip">—</strong>
-        </article>
-        <article class="stat">
-          <span class="stat-label">Source FPS</span>
-          <strong id="fps">—</strong>
-        </article>
-      </div>
-
-      <div class="posture-bars" id="posture-bars" hidden>
-        <h3>Frame posture mix</h3>
-        <div class="bars" id="bars"></div>
-      </div>
-    </section>
-  </main>
-
-  <footer class="foot">
-    <span>Spatial metrics normalized by standing height · low-confidence joints flagged</span>
-  </footer>
-
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

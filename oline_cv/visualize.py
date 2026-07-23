@@ -48,6 +48,7 @@ def write_overlay_video(
         return
     config = config or AnalysisConfig()
     jersey = config.target_jersey
+    label = f"#{jersey}" if jersey is not None else "OL"
     zoom = config.overlay_zoom_on_athlete
     out_size = config.overlay_zoom_size if zoom else None
 
@@ -99,7 +100,7 @@ def write_overlay_video(
 
         m = body_by_idx.get(pose.frame_idx)
         hud = [
-            f"#{jersey}",
+            label,
             f"frame {pose.frame_idx}",
         ]
         if pose.frame_idx == snap.snap_frame:
@@ -194,7 +195,7 @@ def _remap_pose_to_zoom(
     )
 
 
-def _draw_hud(img: np.ndarray, lines: list[str], jersey: int) -> None:
+def _draw_hud(img: np.ndarray, lines: list[str], _jersey: int | None = None) -> None:
     overlay = img.copy()
     cv2.rectangle(overlay, (12, 12), (280, 28 + 26 * len(lines)), (18, 28, 22), -1)
     cv2.addWeighted(overlay, 0.72, img, 0.28, 0, img)

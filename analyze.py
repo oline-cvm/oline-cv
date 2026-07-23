@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""CLI for offensive lineman pass-set analysis.
+"""CLI for offensive lineman analysis.
 
 Example:
   python analyze.py footage.mp4
+  python analyze.py footage.mp4 --jersey 76
   python analyze.py footage.mp4 --pick-xy 0.28,0.55
-  python analyze.py footage.mp4 --snap-frame 42 --no-overlay
 """
 
 from __future__ import annotations
@@ -19,39 +19,40 @@ from oline_cv.pipeline import analyze_video, result_brief
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="OL pass-set CV analysis (Modules 1–2)")
-    p.add_argument("video", type=str, help="Path to sideline/endzone pass-set video")
+    p = argparse.ArgumentParser(description="OL pass-set / run CV analysis")
+    p.add_argument("video", type=str, help="Path to sideline/endzone video")
     p.add_argument("-o", "--output", type=str, default=None, help="Output JSON path")
     p.add_argument("--overlay", type=str, default=None, help="Overlay video path")
     p.add_argument("--no-overlay", action="store_true", help="Skip overlay video")
     p.add_argument(
+        "--jersey",
+        type=int,
+        default=None,
+        help="Optional jersey label for UI (does not drive tracking)",
+    )
+    p.add_argument(
+        "--play-type",
+        choices=["pass", "run"],
+        default="pass",
+        help="Pass protection or run blocking analysis",
+    )
+    p.add_argument(
         "--model",
         type=str,
-        default="yolov8n-pose.pt",
-        help="Ultralytics YOLO-pose weights (default yolov8n-pose.pt; try yolov8m-pose.pt)",
+        default="yolov8m-pose.pt",
+        help="Ultralytics YOLO-pose weights",
     )
     p.add_argument("--snap-frame", type=int, default=None, help="Manual snap frame override")
     p.add_argument("--set-end-frame", type=int, default=None, help="Manual set end frame")
-    p.add_argument("--jersey", type=int, default=76, help="Target jersey number (default 76)")
     p.add_argument(
         "--pick-xy",
         type=str,
         default=None,
-        help="Normalized click x,y to select the target OL (e.g. 0.28,0.55)",
+        help="Optional normalized click x,y to force athlete lock",
     )
-    p.add_argument(
-        "--movement-threshold",
-        type=float,
-        default=None,
-        help="Foot/hip move threshold as fraction of standing height (default 0.015)",
-    )
-    p.add_argument(
-        "--min-keypoint-confidence",
-        type=float,
-        default=None,
-        help="Flag joints below this confidence (default 0.40)",
-    )
-    p.add_argument("--brief", action="store_true", help="Print one-line summary only")
+    p.add_argument("--movement-threshold", type=float, default=None)
+    p.add_argument("--min-keypoint-confidence", type=float, default=None)
+    p.add_argument("--brief", action="store_true")
     return p
 
 
@@ -62,7 +63,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Video not found: {video}", file=sys.stderr)
         return 1
 
-    cfg = AnalysisConfig(pose_model=args.model, target_jersey=args.jersey)
+    cfg = AnalysisConfig(
+        pose_model=args.model,
+        target_jersey=args.jersey,
+        play_type=args.play_type,
+    )
     if args.no_overlay:
         cfg.write_overlay_video = False
     if args.snap_frame is not None:
@@ -79,8 +84,6 @@ def main(argv: list[str] | None = None) -> int:
             print("--pick-xy must be x,y", file=sys.stderr)
             return 1
         cfg.athlete_pick_xy = (parts[0], parts[1])
-    elif args.jersey == 76:
-        cfg.athlete_pick_xy = (0.272, 0.53)
 
     print(f"Analyzing {video} ...")
     result = analyze_video(
