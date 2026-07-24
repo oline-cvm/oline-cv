@@ -62,10 +62,12 @@ function render(r) {
       ? `#${r.jersey}`
       : "OL";
   $("title").textContent = label;
-  const lock = r.ol_lock?.method ? ` · lock ${r.ol_lock.method}` : "";
+  const lock = r.ol_lock?.method
+    ? ` · lock ${r.ol_lock.method}${r.ol_lock.jersey != null ? " #" + r.ol_lock.jersey : ""}`
+    : "";
   $("subtitle").textContent = `${r.play_type || "pass"} · snap ${r.snap_frame ?? "—"} · ${
     r.video_fps ? Number(r.video_fps).toFixed(0) + " fps" : ""
-  }${lock}`;
+  }${lock} · full frame`;
 
   const ms = r.reaction_time_ms;
   $("reaction").textContent = ms == null ? "—" : `${Math.round(ms)} ms`;

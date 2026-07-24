@@ -204,6 +204,12 @@ def lock_ol_from_frames(
             {0, max(0, min(n - 1, 15)), max(0, min(n - 1, 30)), max(0, min(n - 1, 45)), max(0, min(n - 1, 60))}
         )
 
+    # Prefer explicit jersey when requested (e.g. #76).
+    if config.target_jersey is not None:
+        jersey_hit = _lock_by_jersey(model, frames, sample_indices, config, w, h)
+        if jersey_hit is not None:
+            return jersey_hit
+
     votes: list[OLCandidate] = []
     for idx in sample_indices:
         results = model.predict(
@@ -256,5 +262,67 @@ def lock_ol_from_frames(
         "agreement": len(modal),
         "sample_frames": sample_indices,
         "lock_xy": [float(center[0]), float(center[1])],
+        "target_jersey": config.target_jersey,
     }
     return center, np.asarray(pick.bbox, dtype=float), meta
+
+
+def _lock_by_jersey(
+    model,
+    frames: list,
+    sample_indices: list[int],
+    config: AnalysisConfig,
+    width: int,
+    height: int,
+) -> tuple[np.ndarray, np.ndarray, dict] | None:
+    """Vote across sample frames for the box whose jersey OCR matches target."""
+    from oline_cv.jersey_ocr import find_jersey_match
+
+    target = int(config.target_jersey)  # type: ignore[arg-type]
+    hits: list[tuple[np.ndarray, np.ndarray, float, int]] = []  # center, bbox, conf, frame
+    for idx in sample_indices:
+        results = model.predict(
+            frames[idx],
+            verbose=False,
+            conf=config.min_person_confidence,
+            imgsz=config.pose_imgsz,
+        )
+        if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+            continue
+        boxes = results[0].boxes.xyxy.cpu().numpy()
+        match = find_jersey_match(frames[idx], boxes, target, min_conf=0.35)
+        if match is None:
+            continue
+        i, conf = match
+        box = boxes[i].astype(float)
+        center = (box[:2] + box[2:]) / 2.0
+        hits.append((center, box, conf, idx))
+
+    if not hits:
+        return None
+
+    # Cluster by x-bin; prefer the jersey cluster that appears most often.
+    bins: dict[int, list[tuple[np.ndarray, np.ndarray, float, int]]] = {}
+    for center, box, conf, idx in hits:
+        key = int(center[0] / max(0.025 * width, 1.0))
+        bins.setdefault(key, []).append((center, box, conf, idx))
+    modal = max(bins.values(), key=lambda vs: (len(vs), sum(v[2] for v in vs)))
+    # Need ≥2 agreeing frames, or one strong OCR read
+    if len(modal) < 2 and not (len(modal) == 1 and modal[0][2] >= 0.55):
+        return None
+
+    xs = np.array([v[0][0] for v in modal])
+    ys = np.array([v[0][1] for v in modal])
+    center = np.array([float(np.median(xs)), float(np.median(ys))])
+    pick = min(modal, key=lambda v: float(np.linalg.norm(v[0] - center)))
+    meta = {
+        "method": "jersey_ocr",
+        "jersey": target,
+        "ocr_confidence": float(np.mean([v[2] for v in modal])),
+        "votes": len(hits),
+        "agreement": len(modal),
+        "sample_frames": sample_indices,
+        "lock_xy": [float(center[0]), float(center[1])],
+        "hit_frames": [int(v[3]) for v in modal],
+    }
+    return center, np.asarray(pick[1], dtype=float), meta

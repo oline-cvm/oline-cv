@@ -140,7 +140,7 @@ h1 {
 
 .workspace {
   display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: 1.45fr 0.7fr;
   gap: 1rem;
   margin-bottom: 1.25rem;
 }
@@ -149,8 +149,9 @@ h1 {
   position: relative;
   background: #080a06;
   border: 1px solid var(--line);
-  aspect-ratio: 1;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
+  min-height: 280px;
 }
 video {
   width: 100%;

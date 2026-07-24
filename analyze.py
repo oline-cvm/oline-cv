@@ -27,8 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--jersey",
         type=int,
-        default=None,
-        help="Optional jersey label for UI (does not drive tracking)",
+        default=76,
+        help="Jersey to lock via OCR (default 76). Use -1 to disable jersey lock.",
     )
     p.add_argument(
         "--play-type",
@@ -63,10 +63,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Video not found: {video}", file=sys.stderr)
         return 1
 
+    jersey = None if args.jersey is not None and args.jersey < 0 else args.jersey
     cfg = AnalysisConfig(
         pose_model=args.model,
-        target_jersey=args.jersey,
+        target_jersey=jersey,
         play_type=args.play_type,
+        overlay_zoom_on_athlete=False,
     )
     if args.no_overlay:
         cfg.write_overlay_video = False

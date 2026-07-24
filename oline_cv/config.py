@@ -41,13 +41,13 @@ class AnalysisConfig:
     min_person_confidence: float = 0.25
     athlete_roi: tuple[float, float, float, float] = (0.10, 0.20, 0.90, 0.90)
     athlete_pick_xy: tuple[float, float] | None = None
-    # Optional UI label only — lock uses stance/LOS clustering, not jersey OCR.
+    # Optional jersey number — when set, lock prefers OCR match (e.g. #76).
     target_jersey: int | None = None
     track_crop_pad: float = 0.85  # wider crop so DL stays in view for mirror/hands
     track_max_jump_mult: float = 1.35
     # Track nearest defender inside the OL crop for mirror / anchor / hands.
     track_defender: bool = True
-    overlay_zoom_on_athlete: bool = True
+    overlay_zoom_on_athlete: bool = False
     overlay_zoom_size: int = 720
     play_type: PlayType = "pass"
 

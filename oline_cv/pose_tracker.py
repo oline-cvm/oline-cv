@@ -73,11 +73,23 @@ class PoseTracker:
             self._anchor_center = center
             self._anchor_bbox = bbox
             self.lock_meta = meta
-            print(
-                f"  OL lock: {meta.get('method')} score={meta.get('score'):.2f} "
-                f"knee={meta.get('knee_flex')} @ ({center[0]:.0f},{center[1]:.0f})",
-                flush=True,
-            )
+            method = meta.get("method")
+            if method == "jersey_ocr":
+                print(
+                    f"  OL lock: jersey_ocr #{meta.get('jersey')} "
+                    f"conf={meta.get('ocr_confidence', 0):.2f} "
+                    f"hits={meta.get('agreement')}/{meta.get('votes')} "
+                    f"@ ({center[0]:.0f},{center[1]:.0f})",
+                    flush=True,
+                )
+            else:
+                score = meta.get("score")
+                score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "—"
+                print(
+                    f"  OL lock: {method} score={score_s} "
+                    f"knee={meta.get('knee_flex')} @ ({center[0]:.0f},{center[1]:.0f})",
+                    flush=True,
+                )
 
         ol_poses: list[FramePose] = []
         dl_poses: list[FramePose | None] = []

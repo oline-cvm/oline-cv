@@ -93,6 +93,9 @@ async def analyze(
     jersey_i: int | None = None
     if str(jersey).strip().isdigit():
         jersey_i = int(str(jersey).strip())
+    else:
+        # Default lock target for this film room: #76
+        jersey_i = 76
 
     JOBS[job_id] = {
         "id": job_id,
@@ -124,13 +127,13 @@ def _run_job(
     job = JOBS[job_id]
     try:
         job["status"] = "running"
-        job["progress"] = "Detecting offensive lineman…"
+        job["progress"] = f"Detecting #{jersey}…" if jersey is not None else "Detecting offensive lineman…"
         out_json = str(OUTPUT_DIR / f"{job_id}_analysis.json")
         out_overlay = str(OUTPUT_DIR / f"{job_id}_overlay.mp4")
         cfg = AnalysisConfig(
             target_jersey=jersey,
             write_overlay_video=True,
-            overlay_zoom_on_athlete=True,
+            overlay_zoom_on_athlete=False,  # full-frame preview
             play_type="run" if play_type == "run" else "pass",
             pose_model="yolov8m-pose.pt",
         )
