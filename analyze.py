@@ -27,8 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--jersey",
         type=int,
-        default=76,
-        help="Jersey to lock via OCR (default 76). Use -1 to disable jersey lock.",
+        default=None,
+        help="Optional jersey to lock via OCR. Omit for auto stance/LOS lock. Use -1 to force auto.",
     )
     p.add_argument(
         "--play-type",

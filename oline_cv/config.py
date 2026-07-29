@@ -43,8 +43,25 @@ class AnalysisConfig:
     athlete_pick_xy: tuple[float, float] | None = None
     # Optional jersey number — when set, lock prefers OCR match (e.g. #76).
     target_jersey: int | None = None
-    track_crop_pad: float = 0.85  # wider crop so DL stays in view for mirror/hands
-    track_max_jump_mult: float = 1.35
+    # Crop pad around locked OL. Lower = fewer distractors in-frame.
+    track_crop_pad: float = 0.55
+    track_max_jump_mult: float = 0.85
+    # Identity stickiness — reject switches unless clearly the same body.
+    track_min_iou: float = 0.32
+    track_switch_iou_margin: float = 0.15
+    track_max_center_frac: float = 0.42  # vs prior bbox diagonal
+    track_area_ratio_min: float = 0.50
+    track_area_ratio_max: float = 2.0
+    track_ema: float = 0.88  # higher = stickier anchor
+    track_lost_expand_frames: int = 10
+    track_teleport_frac: float = 0.38  # hard reject 1-frame jumps beyond this × athlete diag
+    # Max travel from lock, as multiples of the locked athlete's bbox diagonal.
+    # Pass sets stay compact; run/pull needs more room — scaled by play_type at runtime.
+    track_max_origin_diag_mult: float = 1.8
+    track_max_origin_diag_mult_run: float = 3.2
+    track_hip_jump_frac: float = 0.30  # vs athlete diag
+    track_hip_origin_frac: float = 1.4  # hip vs lock origin, × diag
+    track_hip_vert_frac: float = 0.60  # |Δy| hip vs lock origin, × diag
     # Track nearest defender inside the OL crop for mirror / anchor / hands.
     track_defender: bool = True
     overlay_zoom_on_athlete: bool = False

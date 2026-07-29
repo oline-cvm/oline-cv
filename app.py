@@ -93,9 +93,7 @@ async def analyze(
     jersey_i: int | None = None
     if str(jersey).strip().isdigit():
         jersey_i = int(str(jersey).strip())
-    else:
-        # Default lock target for this film room: #76
-        jersey_i = 76
+    # Empty jersey → auto OL lock (stance/LOS). If set → OCR that number on any clip.
 
     JOBS[job_id] = {
         "id": job_id,
