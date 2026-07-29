@@ -99,10 +99,16 @@ def write_overlay_video(
             cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (40, 200, 120), 2)
 
         m = body_by_idx.get(pose.frame_idx)
+        state = getattr(pose, "track_state", None) or "—"
+        tconf = float(getattr(pose, "track_confidence", 0.0) or 0.0)
+        tid = getattr(pose, "track_id", None)
         hud = [
             label,
             f"frame {pose.frame_idx}",
+            f"{state} {tconf:.2f}",
         ]
+        if tid is not None:
+            hud.append(f"bsort#{tid}")
         if pose.frame_idx == snap.snap_frame:
             hud.append("SNAP")
         if quicks.reaction_time_ms is not None and pose.frame_idx >= snap.snap_frame:
@@ -192,6 +198,10 @@ def _remap_pose_to_zoom(
         person_confidence=pose.person_confidence,
         low_confidence=pose.low_confidence,
         usable=pose.usable,
+        track_state=getattr(pose, "track_state", "LOST"),
+        track_confidence=float(getattr(pose, "track_confidence", 0.0) or 0.0),
+        track_id=getattr(pose, "track_id", None),
+        target_id=int(getattr(pose, "target_id", 1) or 1),
     )
 
 
@@ -206,6 +216,10 @@ def _draw_hud(img: np.ndarray, lines: list[str], _jersey: int | None = None) -> 
         color = (120, 255, 180) if i == 0 else (230, 240, 230)
         if line == "SNAP" or line.startswith("REACT") or "FIRST" in line:
             color = (80, 210, 255)
+        if line.startswith("LOST") or line.startswith("UNCERTAIN"):
+            color = (40, 40, 255)
+        if line.startswith("REIDENTIFIED") or line.startswith("TRACKED"):
+            color = (40, 220, 120)
         cv2.putText(img, line, (24, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
         y += 26
 

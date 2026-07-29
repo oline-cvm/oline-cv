@@ -62,6 +62,26 @@ class AnalysisConfig:
     track_hip_jump_frac: float = 0.30  # vs athlete diag
     track_hip_origin_frac: float = 1.4  # hip vs lock origin, × diag
     track_hip_vert_frac: float = 0.60  # |Δy| hip vs lock origin, × diag
+    # Once locked, never adopt another player — frozen appearance + association.
+    track_freeze_identity: bool = True
+    track_id_embed_min: float = 0.58  # legacy; prefer track_min_appearance
+    track_id_train_steps: int = 80  # unused (no lock-time NN train)
+    # Association (None = leave unset; calib mode derives appearance floor from self-sim)
+    track_calib_mode: bool = True
+    track_debug_dir: str | None = None
+    track_lost_buffer: int = 45
+    track_reject_wrong_team: bool = True
+    track_min_appearance: float | None = None
+    track_min_jersey: float | None = None
+    track_min_weighted: float | None = None
+    track_min_iou_assoc: float | None = None
+    track_uncertain_weighted: float | None = None
+    track_w_appearance: float = 0.35
+    track_w_motion: float = 0.20
+    track_w_iou: float = 0.20
+    track_w_jersey: float = 0.12
+    track_w_size: float = 0.08
+    track_w_formation: float = 0.05
     # Track nearest defender inside the OL crop for mirror / anchor / hands.
     track_defender: bool = True
     overlay_zoom_on_athlete: bool = False

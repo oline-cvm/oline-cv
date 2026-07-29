@@ -1,5 +1,6 @@
 easyocr>=1.7.0
 ultralytics>=8.3.0
+lap>=0.5.12
 opencv-python-headless>=4.8.0
 numpy>=1.26.0
 scipy>=1.11.0
