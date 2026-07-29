@@ -281,6 +281,11 @@ def analyze_video(
         "frames": per_frame,
     }
 
+    from oline_cv.trust import compute_trust
+
+    result["trust"] = compute_trust(result)
+    result["rep_summary"]["trust_overall"] = result["trust"]["overall"]
+
     if output_json is None:
         output_json = str(Path(video_path).with_suffix("")) + "_analysis.json"
     Path(output_json).write_text(json.dumps(result, indent=2), encoding="utf-8")

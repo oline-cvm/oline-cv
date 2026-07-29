@@ -21,6 +21,20 @@
           <span id="file-label">Choose film</span>
         </label>
 
+        <div class="pick-box" id="pick-box">
+          <div class="pick-head">
+            <span>Click-to-lock</span>
+            <button type="button" class="linkish" id="clear-pick">Clear</button>
+          </div>
+          <p class="pick-hint" id="pick-hint">Load film, then click the OL on the preview</p>
+          <div class="pick-stage" id="pick-stage">
+            <video id="pick-video" muted playsinline></video>
+            <canvas id="pick-canvas"></canvas>
+            <div class="pick-empty" id="pick-empty">No film loaded</div>
+          </div>
+          <p class="pick-coord" id="pick-coord">auto lock</p>
+        </div>
+
         <label>Jersey <span class="opt">optional OCR</span>
           <input type="number" id="jersey" placeholder="auto" min="0" max="99" />
         </label>
@@ -47,9 +61,16 @@
       <header class="head">
         <div>
           <h1 id="title">OL</h1>
-          <p id="subtitle" class="muted">Auto-locks an OL · optional jersey OCR · full-frame film</p>
+          <p id="subtitle" class="muted">Auto-locks an OL · click or jersey OCR · full-frame film</p>
         </div>
-        <div class="tags" id="tags"></div>
+        <div class="head-actions">
+          <div class="trust-pill" id="trust-pill" title="Overall signal trust">
+            <span class="k">Trust</span>
+            <span class="v" id="trust-overall">—</span>
+          </div>
+          <button type="button" class="secondary small" id="pin-compare">Pin for compare</button>
+          <div class="tags" id="tags"></div>
+        </div>
       </header>
 
       <div class="workspace">
@@ -68,6 +89,14 @@
           <div class="grid" id="summary-grid"></div>
         </div>
       </div>
+
+      <section class="compare" id="compare">
+        <div class="compare-head">
+          <h2>Side-by-side</h2>
+          <p class="muted" id="compare-hint">Pin a result, run another rep, then compare</p>
+        </div>
+        <div class="compare-grid" id="compare-grid"></div>
+      </section>
 
       <div class="modules" id="modules"></div>
     </section>
