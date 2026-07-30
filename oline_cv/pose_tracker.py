@@ -122,9 +122,19 @@ class PoseTracker:
             self.config.track_calib_mode = False
 
     def extract_all(
-        self, video_path: str
+        self,
+        video_path: str,
+        progress_cb=None,
     ) -> tuple[float, int, int, int, list[FramePose], list[FramePose | None], list[np.ndarray]]:
         import cv2
+
+        def _prog(pct: float, msg: str, stage: str = "track") -> None:
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(pct, msg, stage)
+            except Exception:
+                pass
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -134,15 +144,19 @@ class PoseTracker:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+        _prog(4, "Reading video frames…", "ingest")
         frames: list[np.ndarray] = []
         while True:
             ok, frame = cap.read()
             if not ok:
                 break
             frames.append(frame)
+            if len(frames) % 60 == 0:
+                _prog(4 + min(4.0, len(frames) / 80.0), f"Reading frames ({len(frames)})…", "ingest")
         cap.release()
 
         # --- Step A: initial lock (selection only; not ongoing identity) ---
+        _prog(10, "Locking offensive lineman…", "lock")
         if self._pick_xy is not None:
             self._anchor_center = np.array(
                 [self._pick_xy[0] * width, self._pick_xy[1] * height], dtype=float
@@ -179,6 +193,7 @@ class PoseTracker:
                 )
 
         # --- Frozen multi-frame appearance (no NN training) ---
+        _prog(14, "Building frozen appearance reference…", "lock")
         self._build_associator(frames, fps)
 
         # Reset BoT-SORT state for a clean run
@@ -188,11 +203,17 @@ class PoseTracker:
         ol_poses: list[FramePose] = []
         dl_poses: list[FramePose | None] = []
         self.track_states = []
+        n_frames = max(1, len(frames))
         for idx, frame in enumerate(frames):
             ol, dl = self._infer_frame(frame, idx, fps)
             ol_poses.append(ol)
             dl_poses.append(dl)
             self.track_states.append(ol.track_state)
+            if (idx + 1) % 10 == 0 or idx + 1 == n_frames:
+                # Pose tracking is the long stretch — map to ~16–72%
+                frac = (idx + 1) / n_frames
+                pct = 16.0 + 56.0 * frac
+                _prog(pct, f"Tracking athlete ({idx + 1}/{n_frames})…", "track")
             if (idx + 1) % 30 == 0:
                 print(f"  pose {idx + 1} frames...", flush=True)
 

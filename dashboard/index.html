@@ -54,10 +54,39 @@
         <button type="button" class="secondary" id="demo">Last result</button>
       </form>
 
+      <div class="progress-panel" id="progress-panel" hidden>
+        <div class="progress-top">
+          <span class="progress-label" id="progress-label">Working…</span>
+          <span class="progress-pct" id="progress-pct">0%</span>
+        </div>
+        <div class="progress-track" aria-hidden="true">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <ul class="progress-stages" id="progress-stages">
+          <li data-stage="ingest">Ingest film</li>
+          <li data-stage="lock">Lock athlete</li>
+          <li data-stage="track">Track identity</li>
+          <li data-stage="metrics">Yeager metrics</li>
+          <li data-stage="overlay">Render overlay</li>
+          <li data-stage="encode">Encode preview</li>
+        </ul>
+      </div>
+
       <p class="status" id="status"></p>
     </aside>
 
     <section class="main">
+      <div class="busy-veil" id="busy-veil" hidden>
+        <div class="busy-card">
+          <div class="busy-spinner" aria-hidden="true"></div>
+          <p class="busy-title" id="busy-title">Analyzing film</p>
+          <p class="busy-msg" id="busy-msg">Starting…</p>
+          <div class="progress-track big">
+            <div class="progress-fill" id="busy-fill"></div>
+          </div>
+          <p class="busy-pct" id="busy-pct">0%</p>
+        </div>
+      </div>
       <header class="head">
         <div>
           <h1 id="title">OL</h1>

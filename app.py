@@ -123,6 +123,9 @@ async def analyze(
         "jersey": jersey_i,
         "pick_xy": pick_xy,
         "progress": "Queued",
+        "percent": 0,
+        "stage": "queued",
+        "stages_done": [],
         "result": None,
         "error": None,
     }
@@ -145,6 +148,23 @@ def recent_results() -> JSONResponse:
     return JSONResponse({"results": RECENT[-8:]})
 
 
+STAGE_ORDER = ("ingest", "lock", "track", "metrics", "overlay", "encode", "done")
+
+
+def _set_progress(job: dict[str, Any], percent: float, message: str, stage: str) -> None:
+    job["percent"] = int(max(0, min(100, round(percent))))
+    job["progress"] = message
+    job["stage"] = stage
+    done = list(job.get("stages_done") or [])
+    # Mark prior stages complete when we advance
+    if stage in STAGE_ORDER:
+        idx = STAGE_ORDER.index(stage)
+        for s in STAGE_ORDER[:idx]:
+            if s not in done:
+                done.append(s)
+    job["stages_done"] = done
+
+
 def _run_job(
     job_id: str,
     video_path: str,
@@ -157,11 +177,14 @@ def _run_job(
     try:
         job["status"] = "running"
         if pick_xy is not None:
-            job["progress"] = f"Locking click ({pick_xy[0]:.2f},{pick_xy[1]:.2f})…"
+            _set_progress(
+                job, 3, f"Locking click ({pick_xy[0]:.2f},{pick_xy[1]:.2f})…", "lock"
+            )
         elif jersey is not None:
-            job["progress"] = f"Detecting #{jersey}…"
+            _set_progress(job, 3, f"Detecting #{jersey}…", "lock")
         else:
-            job["progress"] = "Detecting offensive lineman…"
+            _set_progress(job, 3, "Detecting offensive lineman…", "lock")
+
         out_json = str(OUTPUT_DIR / f"{job_id}_analysis.json")
         out_overlay = str(OUTPUT_DIR / f"{job_id}_overlay.mp4")
         cfg = AnalysisConfig(
@@ -175,19 +198,30 @@ def _run_job(
         if snap_frame is not None:
             cfg.snap_frame_override = snap_frame
 
-        result = analyze_video(video_path, config=cfg, output_json=out_json, overlay_path=out_overlay)
-        job["progress"] = "Encoding preview…"
+        def on_progress(pct: float, msg: str, stage: str = "analyze") -> None:
+            _set_progress(job, pct, msg, stage)
+
+        result = analyze_video(
+            video_path,
+            config=cfg,
+            output_json=out_json,
+            overlay_path=out_overlay,
+            progress_cb=on_progress,
+        )
+        _set_progress(job, 95, "Encoding web preview…", "encode")
         web_path = ensure_web_mp4(out_overlay, str(OUTPUT_DIR / f"{job_id}_web.mp4"))
         packed = _pack_result(jersey, result, web_path, Path(out_json).name)
         packed["id"] = job_id
         job["result"] = packed
         _remember(packed)
         job["status"] = "done"
-        job["progress"] = "Done"
+        _set_progress(job, 100, "Done", "done")
+        job["stages_done"] = list(STAGE_ORDER)
     except Exception as exc:
         job["status"] = "error"
         job["error"] = str(exc)
         job["progress"] = "Failed"
+        job["stage"] = "error"
 
 
 @app.get("/api/demo")

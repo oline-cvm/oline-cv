@@ -55,14 +55,29 @@ def analyze_video(
     config: AnalysisConfig | None = None,
     output_json: str | None = None,
     overlay_path: str | None = None,
+    progress_cb=None,
 ) -> dict[str, Any]:
     config = config or AnalysisConfig()
     video_path = str(video_path)
+
+    def _prog(pct: float, msg: str, stage: str = "analyze") -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(float(pct), str(msg), str(stage))
+        except Exception:
+            pass
+
+    _prog(2, "Starting analysis…", "ingest")
     tracker = PoseTracker(config)
-    fps, n_frames, width, height, ol_poses, dl_poses, frames = tracker.extract_all(video_path)
+    fps, n_frames, width, height, ol_poses, dl_poses, frames = tracker.extract_all(
+        video_path, progress_cb=progress_cb
+    )
     ol_lock = getattr(tracker, "lock_meta", {}) or {}
 
+    _prog(74, "Detecting snap…", "metrics")
     snap = detect_snap(frames, config)
+    _prog(76, "Measuring get-off / reaction…", "metrics")
     quicks = analyze_initial_quicks(ol_poses, snap.snap_frame, fps, config)
     usable = [p.usable for p in ol_poses]
     set_end = determine_set_end(len(ol_poses), snap.snap_frame, usable, config)
@@ -101,6 +116,7 @@ def analyze_video(
 
     mode = config.play_type if config.play_type != "auto" else "pass"
 
+    _prog(78, "Computing posture & footwork…", "metrics")
     body_metrics = [
         compute_frame_body_metrics(ol_poses[i], quicks.standing_height_px, config)
         for i in range(snap.snap_frame, set_end + 1)
@@ -134,6 +150,7 @@ def analyze_video(
             print(f"  NN posture skipped: {exc}", flush=True)
 
     body_summary = summarize_body_position(body_metrics, config, fps=fps)
+    _prog(82, "Running Yeager modules…", "metrics")
     balance = analyze_com_balance(ol_series, config)
     footwork = analyze_footwork(ol_series, config, mode=mode)
     mirror = analyze_mirror_redirect(ol_series, dl_arg, config)
@@ -294,11 +311,13 @@ def analyze_video(
     if config.write_overlay_video:
         if overlay_path is None:
             overlay_path = str(Path(video_path).with_suffix("")) + config.overlay_suffix
+        _prog(88, "Rendering overlay film…", "overlay")
         write_overlay_video(
             frames, ol_poses, body_metrics, snap, quicks, fps, overlay_path, config=config
         )
         result["overlay_video"] = overlay_path
 
+    _prog(94, "Analysis complete", "overlay")
     return result
 
 

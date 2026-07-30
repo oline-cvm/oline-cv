@@ -120,11 +120,12 @@ $("form").addEventListener("submit", async (e) => {
     fd.append("pick_y", String(pickXY.y));
   }
 
-  setBusy(true, "Uploading…");
+  setBusy(true, "Uploading film…", 2, "ingest");
   try {
     const res = await fetch("/api/analyze", { method: "POST", body: fd });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Upload failed");
+    setProgressUI(6, "Queued — starting analysis…", "ingest", []);
     await poll(data.job_id);
   } catch (err) {
     setBusy(false, err.message);
@@ -132,7 +133,7 @@ $("form").addEventListener("submit", async (e) => {
 });
 
 $("demo").addEventListener("click", async () => {
-  setBusy(true, "Loading…");
+  setBusy(true, "Loading…", 10, "ingest");
   try {
     const res = await fetch("/api/demo");
     const data = await res.json();
@@ -161,14 +162,20 @@ async function poll(id) {
   for (;;) {
     const res = await fetch(`/api/jobs/${id}`);
     const job = await res.json();
-    setStatus(job.progress || job.status);
+    const pct = Number.isFinite(job.percent) ? job.percent : null;
+    setProgressUI(
+      pct,
+      job.progress || job.status || "Working…",
+      job.stage || "",
+      job.stages_done || []
+    );
     if (job.status === "done") {
       render(job.result);
       setBusy(false, "");
       return;
     }
     if (job.status === "error") throw new Error(job.error || "Failed");
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 700));
   }
 }
 
@@ -367,12 +374,42 @@ function deg(v) {
 function num(v, d) {
   return v == null ? "—" : Number(v).toFixed(d);
 }
-function setBusy(busy, msg) {
+function setBusy(busy, msg, percent, stage) {
   $("run").disabled = busy;
   $("demo").disabled = busy;
   $("pin-compare").disabled = busy;
-  setStatus(msg || "");
+  const panel = $("progress-panel");
+  const veil = $("busy-veil");
+  if (busy) {
+    panel.hidden = false;
+    veil.hidden = false;
+    setProgressUI(percent ?? 1, msg || "Working…", stage || "ingest", []);
+  } else {
+    panel.hidden = true;
+    veil.hidden = true;
+    setStatus(msg || "");
+  }
 }
+
+function setProgressUI(percent, message, stage, stagesDone) {
+  const pct = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const msg = message || "Working…";
+  setStatus(msg);
+  $("progress-label").textContent = msg;
+  $("progress-pct").textContent = `${pct}%`;
+  $("progress-fill").style.width = `${pct}%`;
+  $("busy-msg").textContent = msg;
+  $("busy-pct").textContent = `${pct}%`;
+  $("busy-fill").style.width = `${pct}%`;
+
+  const done = new Set(stagesDone || []);
+  document.querySelectorAll("#progress-stages li").forEach((li) => {
+    const s = li.getAttribute("data-stage");
+    li.classList.toggle("done", done.has(s) || stage === "done");
+    li.classList.toggle("active", stage === s && stage !== "done");
+  });
+}
+
 function setStatus(msg) {
   $("status").textContent = msg || "";
 }
