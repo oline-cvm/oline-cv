@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OLINE · 3D Replay</title>
-  <link rel="stylesheet" href="/static/viewer3d.css?v=2" />
+  <link rel="stylesheet" href="/static/viewer3d.css?v=3" />
 </head>
 <body>
   <div id="boot" class="boot">
@@ -34,11 +34,13 @@
     <button type="button" data-cam="side">Sideline</button>
     <button type="button" data-cam="endzone">End zone</button>
     <button type="button" data-cam="reset">Reset</button>
-    <div class="side-label">Body</div>
+    <div class="side-label">Body (OL)</div>
     <button type="button" data-color="white" class="color-btn active">White</button>
     <button type="button" data-color="chalk">Chalk</button>
     <button type="button" data-color="skin">Skin</button>
     <button type="button" data-color="slate">Slate</button>
+    <div class="side-label">Tip</div>
+    <p class="side-hint">Scrub past ~frame 111 — contact opponent (slate) appears during the block.</p>
   </aside>
 
   <footer class="transport">
@@ -64,6 +66,6 @@
     }
   }
   </script>
-  <script type="module" src="/static/viewer3d.js?v=2"></script>
+  <script type="module" src="/static/viewer3d.js?v=3"></script>
 </body>
 </html>

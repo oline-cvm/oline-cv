@@ -9,6 +9,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const CLIP = new URLSearchParams(location.search).get("clip") || "footage";
 const MESH_URL = `/outputs/motion3d/${CLIP}/mesh_threejs.bin`;
+const CONTACT_URL = `/outputs/motion3d/${CLIP}/mesh_contact.bin`;
 const META_URL = `/api/motion3d/${CLIP}`;
 
 const boot = document.getElementById("boot");
@@ -138,7 +139,7 @@ const BODY_COLORS = {
   slate: 0x8a93a0,
 };
 
-function buildBody(pack) {
+function buildBody(pack, colorHex = BODY_COLORS.white) {
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(pack.nVerts * 3);
   pos.set(pack.verts.subarray(0, pack.nVerts * 3));
@@ -147,7 +148,7 @@ function buildBody(pack) {
   geo.computeVertexNormals();
 
   const mat = new THREE.MeshPhysicalMaterial({
-    color: BODY_COLORS.white,
+    color: colorHex,
     roughness: 0.42,
     metalness: 0.0,
     clearcoat: 0.28,
@@ -161,9 +162,16 @@ function buildBody(pack) {
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   mesh.frustumCulled = false;
-  mesh.userData.bodyColor = BODY_COLORS.white;
+  mesh.userData.bodyColor = colorHex;
   mesh.userData.bridgedColor = 0xffd089;
   return mesh;
+}
+
+/** Map source frame_index → pack row, for meshes that only cover a contact window. */
+function indexByFrame(pack) {
+  const map = new Map();
+  for (let i = 0; i < pack.nFrames; i++) map.set(pack.frameIndices[i], i);
+  return map;
 }
 
 function applyFrame(mesh, pack, i) {
@@ -209,16 +217,31 @@ async function main() {
     } catch { /* optional */ }
 
     const pack = await loadMeshPack(MESH_URL);
+    setBoot("Loading contact opponent…");
+    let contactPack = null;
+    let contactMap = null;
+    try {
+      const head = await fetch(CONTACT_URL, { method: "HEAD" });
+      if (head.ok) {
+        contactPack = await loadMeshPack(CONTACT_URL);
+        contactMap = indexByFrame(contactPack);
+      }
+    } catch { /* optional */ }
+
     setBoot("Building scene…");
 
     const canvas = document.getElementById("c");
     const { renderer, scene, camera, controls } = createScene(canvas);
-    const body = buildBody(pack);
+    const body = buildBody(pack, BODY_COLORS.white);
     scene.add(body);
 
-    // Follow the athlete's horizontal motion so the orbit target stays useful.
-    const follow = new THREE.Object3D();
-    scene.add(follow);
+    // Contact opponent: darker slate so the two bodies are easy to tell apart.
+    let contactBody = null;
+    if (contactPack) {
+      contactBody = buildBody(contactPack, BODY_COLORS.slate);
+      contactBody.visible = false;
+      scene.add(contactBody);
+    }
 
     scrub.max = String(pack.nFrames - 1);
     scrub.value = "0";
@@ -229,15 +252,29 @@ async function main() {
     let speed = 1;
 
     const jersey = meta?.target?.jersey ?? "?";
-    metaEl.textContent = `jersey ${jersey} · ${pack.nFrames} frames · ${pack.fps.toFixed(0)} fps · ${pack.nVerts.toLocaleString()} verts`;
+    const extra = contactPack
+      ? ` · +contact (${contactPack.nFrames}f)`
+      : "";
+    metaEl.textContent = `jersey ${jersey} · ${pack.nFrames} frames · ${pack.fps.toFixed(0)} fps · ${pack.nVerts.toLocaleString()} verts${extra}`;
     pillStatus.textContent = meta?.metadata?.wham?.world_grounded ? "world grounded" : "local";
     pillStatus.classList.add(meta?.metadata?.wham?.world_grounded ? "ok" : "warn");
 
     function showFrame(i) {
       frame = Math.max(0, Math.min(pack.nFrames - 1, i | 0));
       applyFrame(body, pack, frame);
+      const srcFrame = pack.frameIndices[frame];
+
+      if (contactBody && contactMap) {
+        const ci = contactMap.get(srcFrame);
+        if (ci !== undefined) {
+          contactBody.visible = true;
+          applyFrame(contactBody, contactPack, ci);
+        } else {
+          contactBody.visible = false;
+        }
+      }
+
       const c = frameCenter(pack, frame);
-      // Ease the orbit target toward the torso; keep Y at chest height.
       controls.target.lerp(new THREE.Vector3(c.x, Math.max(0.9, c.y), c.z), 0.12);
       scrub.value = String(frame);
       timeEl.textContent = `${frame + 1} / ${pack.nFrames}`;

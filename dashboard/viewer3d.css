@@ -43,6 +43,10 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); c
   margin-top: 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .7px;
   color: var(--muted); padding: 0 2px;
 }
+.side-hint {
+  margin: 0; max-width: 140px; font-size: 11px; line-height: 1.35; color: var(--muted);
+  padding: 4px 2px;
+}
 .top > * { pointer-events: auto; }
 .back { color: var(--muted); text-decoration: none; font-size: 13px; }
 .back:hover { color: var(--text); }
