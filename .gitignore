@@ -9,6 +9,8 @@ venv/
 *_overlay.mp4
 *_web.mp4
 uploads/
+*_pose3d.json
 outputs/
+
 .pytest_cache/
 .mypy_cache/

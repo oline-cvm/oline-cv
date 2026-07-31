@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OLINE · 3D Replay</title>
+  <link rel="stylesheet" href="/static/viewer3d.css?v=2" />
+</head>
+<body>
+  <div id="boot" class="boot">
+    <div class="boot-card">
+      <div class="boot-spinner" aria-hidden="true"></div>
+      <p class="boot-title">Loading SMPL mesh</p>
+      <p class="boot-msg" id="boot-msg">Fetching reconstruction…</p>
+    </div>
+  </div>
+
+  <canvas id="c"></canvas>
+
+  <header class="top">
+    <a class="back" href="/motion3d">← review</a>
+    <div class="brand">
+      <span class="title">3D Replay</span>
+      <span class="meta" id="meta">—</span>
+    </div>
+    <div class="badges">
+      <span class="pill" id="pill-status">…</span>
+      <span class="pill warn" id="pill-interp" hidden>bridged</span>
+    </div>
+  </header>
+
+  <aside class="side">
+    <button type="button" data-cam="orbit" class="active">Orbit</button>
+    <button type="button" data-cam="side">Sideline</button>
+    <button type="button" data-cam="endzone">End zone</button>
+    <button type="button" data-cam="reset">Reset</button>
+    <div class="side-label">Body</div>
+    <button type="button" data-color="white" class="color-btn active">White</button>
+    <button type="button" data-color="chalk">Chalk</button>
+    <button type="button" data-color="skin">Skin</button>
+    <button type="button" data-color="slate">Slate</button>
+  </aside>
+
+  <footer class="transport">
+    <button type="button" id="btn-play" class="play" aria-label="Play">▶</button>
+    <input type="range" id="scrub" min="0" max="0" value="0" step="1" />
+    <span class="time" id="time">0 / 0</span>
+    <label class="speed">
+      <select id="speed">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="1.5">1.5×</option>
+        <option value="2">2×</option>
+      </select>
+    </label>
+  </footer>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="/static/viewer3d.js?v=2"></script>
+</body>
+</html>

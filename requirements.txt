@@ -9,4 +9,6 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 python-multipart>=0.0.12
 imageio-ffmpeg>=0.5.1
+mediapipe>=0.10.30
+fpdf2>=2.7.0
 pytest>=8.0.0

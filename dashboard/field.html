@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OLINE — On the field</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/field.css" />
+</head>
+<body class="field-body">
+  <div id="boot" class="boot">
+    <div class="boot-card">
+      <div class="boot-spinner" aria-hidden="true"></div>
+      <p class="boot-title">Building 3D pose</p>
+      <p class="boot-msg" id="boot-msg">Starting MediaPipe lift…</p>
+      <div class="progress-track">
+        <div class="progress-fill" id="boot-fill" style="width: 2%"></div>
+      </div>
+      <p class="boot-pct" id="boot-pct">0%</p>
+      <ul class="boot-stages" id="boot-stages">
+        <li data-stage="start">Start lift</li>
+        <li data-stage="model">Load model</li>
+        <li data-stage="lift">Lift frames</li>
+        <li data-stage="ready">Open field</li>
+      </ul>
+      <a class="boot-back" href="/">← Back to film</a>
+    </div>
+  </div>
+  <div id="field-root" hidden>
+    <canvas id="field-canvas"></canvas>
+    <video id="film" playsinline muted crossorigin="anonymous"></video>
+    <div class="field-hud">
+      <div class="field-top">
+        <a class="field-back" href="/">← Back to film</a>
+        <div class="field-title" id="field-title">On the field</div>
+        <div class="field-hint">Your uploaded clip — real pixels on a virtual field. You’re invisible.</div>
+      </div>
+      <div class="field-controls">
+        <button type="button" data-view="cinema">Cinema film</button>
+        <button type="button" data-view="pocket">In the pocket</button>
+        <button type="button" data-view="sideline">Sideline</button>
+        <button type="button" data-view="los">At the LOS</button>
+        <button type="button" data-view="endzone">End zone</button>
+        <button type="button" id="btn-play">Play / Pause</button>
+      </div>
+      <div class="field-scrub">
+        <input type="range" id="scrub" min="0" max="100" value="0" />
+        <span id="scrub-label">0.0s</span>
+      </div>
+      <div class="field-keys">Drag look · Scroll zoom · WASD walk · Space play/pause</div>
+      <div class="field-cue" id="field-cue"></div>
+    </div>
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="/static/field.js?v=player2"></script>
+</body>
+</html>

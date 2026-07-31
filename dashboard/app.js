@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-let pickXY = null; // normalized 0–1
+let pickXY = null;
 let currentResult = null;
 let pinnedResult = null;
 
@@ -8,6 +8,10 @@ try {
   const raw = localStorage.getItem("oline_pinned");
   if (raw) pinnedResult = JSON.parse(raw);
 } catch (_) {}
+
+$("show-advanced").addEventListener("change", () => {
+  $("snap-wrap").hidden = !$("show-advanced").checked;
+});
 
 $("file").addEventListener("change", () => {
   const f = $("file").files?.[0];
@@ -25,7 +29,7 @@ function loadPickPreview(file) {
     $("pick-empty").classList.add("hide");
     v.classList.add("on");
     drawPickOverlay();
-    $("pick-hint").textContent = "Click the offensive lineman to lock";
+    $("pick-hint").textContent = "Tap the offensive lineman to lock";
   };
 }
 
@@ -36,19 +40,18 @@ $("pick-stage").addEventListener("click", (e) => {
     return;
   }
   const rect = v.getBoundingClientRect();
-  // Map click through object-fit: contain letterboxing
   const { x, y } = mapClickToVideo(e.clientX, e.clientY, rect, v.videoWidth, v.videoHeight);
   if (x == null) return;
   pickXY = { x, y };
-  $("pick-coord").textContent = `lock ${x.toFixed(3)}, ${y.toFixed(3)}`;
-  $("pick-hint").textContent = "OL locked — Run to analyze";
+  $("pick-coord").textContent = "player locked";
+  $("pick-hint").textContent = "Locked — hit Analyze rep";
   drawPickOverlay();
 });
 
 $("clear-pick").addEventListener("click", () => {
   pickXY = null;
   $("pick-coord").textContent = "auto lock";
-  $("pick-hint").textContent = "Load film, then click the OL on the preview";
+  $("pick-hint").textContent = "Load film, then tap the OL";
   drawPickOverlay();
 });
 
@@ -114,7 +117,7 @@ $("form").addEventListener("submit", async (e) => {
   fd.append("jersey", $("jersey").value || "");
   fd.append("play_type", $("play_type").value || "pass");
   const snap = $("snap").value;
-  if (snap !== "") fd.append("snap_frame", snap);
+  if ($("show-advanced").checked && snap !== "") fd.append("snap_frame", snap);
   if (pickXY) {
     fd.append("pick_x", String(pickXY.x));
     fd.append("pick_y", String(pickXY.y));
@@ -147,15 +150,41 @@ $("demo").addEventListener("click", async () => {
 
 $("pin-compare").addEventListener("click", () => {
   if (!currentResult) {
-    setStatus("Run an analysis first");
+    setStatus("Analyze a rep first");
     return;
   }
   pinnedResult = currentResult;
   try {
     localStorage.setItem("oline_pinned", JSON.stringify(pinnedResult));
   } catch (_) {}
-  setStatus("Pinned as compare A");
+  setStatus("Saved as compare A");
   renderCompare();
+});
+
+$("export-pdf").addEventListener("click", () => {
+  if (!currentResult) return;
+  const url = currentResult.report_url || `/api/jobs/${currentResult.id}/report.pdf`;
+  if (currentResult.id === "demo" && !currentResult.report_url) {
+    setStatus("PDF available after a full Analyze run");
+    return;
+  }
+  window.open(url, "_blank");
+});
+
+$("on-field").addEventListener("click", async () => {
+  if (!currentResult) return;
+  // Prefer the WHAM SMPL viewer (real mesh). Fall back to the old MediaPipe
+  // field page only when no baked mesh exists yet.
+  const clip = "footage";
+  try {
+    const head = await fetch(`/outputs/motion3d/${clip}/mesh_threejs.bin`, { method: "HEAD" });
+    if (head.ok) {
+      window.open(`/viewer3d?clip=${encodeURIComponent(clip)}`, "_blank");
+      return;
+    }
+  } catch { /* fall through */ }
+  const job = currentResult.id === "demo" ? "demo" : currentResult.id;
+  window.open(`/field?job=${encodeURIComponent(job)}`, "_blank");
 });
 
 async function poll(id) {
@@ -179,85 +208,282 @@ async function poll(id) {
   }
 }
 
+/** Translate raw analysis into coach-facing language. */
+function buildCoachBrief(r) {
+  const flags = new Set(r.coach_language || []);
+  const mods = r.modules || {};
+  const fix = [];
+  const keep = [];
+  const play = r.play_type === "run" ? "run" : "pass";
+
+  // Get-off / reaction
+  const ms = r.reaction_time_ms;
+  if (r.late_off_the_ball || flags.has("late_off_the_ball") || (ms != null && ms > 250)) {
+    fix.push({
+      title: "Get off the ball faster",
+      detail:
+        ms != null
+          ? `First move came ~${Math.round(ms)} ms after snap — push the first step on the ball.`
+          : "Looks late off the snap. Cue: move on the ball, not the defender.",
+    });
+  } else if (ms != null && ms <= 180) {
+    keep.push({
+      title: "Quick off the ball",
+      detail: `First move in ~${Math.round(ms)} ms — that tempo is a win. Keep it.`,
+    });
+  } else if (ms != null) {
+    keep.push({
+      title: "Acceptable get-off",
+      detail: `First move ~${Math.round(ms)} ms. Solid — chase a tick quicker next rep.`,
+    });
+  }
+
+  if (r.initiated_by === "hip") {
+    fix.push({
+      title: "Lead with the feet, not the hips",
+      detail: "Hips moved before the feet. Teach a clean first step so the body doesn’t leak early.",
+    });
+  } else if (r.initiated_by === "foot") {
+    keep.push({
+      title: "Foot-first start",
+      detail: "Feet fired first — good sequence off the snap.",
+    });
+  }
+
+  // Posture
+  const posture = String(r.posture_classification || "");
+  if (posture.includes("bender") || flags.has("waist_bender") || /bender/.test([...flags].join(" "))) {
+    fix.push({
+      title: "Stay out of the waist bend",
+      detail: "Leaning at the waist. Cue: bend at the knees/ankles, keep the chest over the toes.",
+    });
+  } else if (posture.includes("balanced") || posture === "balanced") {
+    keep.push({
+      title: "Balanced posture",
+      detail: "Pad level and torso look controlled through the set.",
+    });
+  } else if (posture && posture !== "unknown") {
+    keep.push({
+      title: `Posture: ${pretty(posture)}`,
+      detail: "Hold this shape longer into contact.",
+    });
+  }
+
+  // Footwork / set
+  const foot = mods.footwork || {};
+  if (foot.overset || flags.has("overset")) {
+    fix.push({
+      title: "Don’t overset",
+      detail: "Set got too deep/wide. Shorten the second step — stay square to the rush lane.",
+    });
+  }
+  if (flags.has("narrow_base") || (r.mean_base_width != null && r.mean_base_width < 0.35)) {
+    fix.push({
+      title: "Widen the base",
+      detail: "Feet got tight. Cue: athletic base — feel pressure on the inside of both feet.",
+    });
+  } else if (r.mean_base_width != null && r.mean_base_width >= 0.45) {
+    keep.push({
+      title: "Good base width",
+      detail: "Feet stayed under the body with room to redirect.",
+    });
+  }
+  if (flags.has("skates") || flags.has("skating")) {
+    fix.push({
+      title: "Stop skating",
+      detail: "Feet are sliding instead of planting. Cue: punch the ground, then redirect.",
+    });
+  }
+
+  // Mirror / lateral
+  const mirror = r.lateral_match;
+  if (mirror != null && mirror < 0.35) {
+    fix.push({
+      title: "Mirror the rusher better",
+      detail: "Lateral match to the defender was soft. Stay attached — shuffle with their hips.",
+    });
+  } else if (mirror != null && mirror >= 0.55) {
+    keep.push({
+      title: "Strong mirror",
+      detail: "Moved with the rusher laterally — that keeps the pocket clean.",
+    });
+  }
+
+  // Anchor
+  const give = r.anchor_give;
+  if (give != null && give > 0.18) {
+    fix.push({
+      title: "Anchor — stop giving ground",
+      detail: "Hips slid back after contact. Cue: drop the hips, stay connected, don’t catch high.",
+    });
+  } else if (give != null && give <= 0.1) {
+    keep.push({
+      title: "Firm anchor",
+      detail: "Held ground after contact — pocket stayed put.",
+    });
+  }
+
+  // Hands / punch
+  const punch = r.punch_ms;
+  if (punch != null && punch > 400) {
+    fix.push({
+      title: "Get hands on sooner",
+      detail: `Punch landed late (~${Math.round(punch)} ms). Strike on arrival — don’t let them into your chest.`,
+    });
+  } else if (punch != null && punch <= 280) {
+    keep.push({
+      title: "Quick hands",
+      detail: `Hands got there in ~${Math.round(punch)} ms — keep striking on time.`,
+    });
+  }
+  if (flags.has("early_hands") || flags.has("early_punch")) {
+    fix.push({
+      title: "Don’t punch air",
+      detail: "Hands left early. Time the strike to contact — independent hands, not arm swimming.",
+    });
+  }
+
+  // Sustain
+  const engage = r.engagement_ms;
+  if (flags.has("early_disengage") || (engage != null && engage < 400 && play === "pass")) {
+    fix.push({
+      title: "Finish the block longer",
+      detail: "Came off too early. Stay attached through the whistle — drive feet after contact.",
+    });
+  } else if (engage != null && engage >= 700) {
+    keep.push({
+      title: "Sustained engagement",
+      detail: "Stayed on the block — that’s how pockets hold up.",
+    });
+  }
+
+  // Flag fallbacks into readable cues
+  const FLAG_MAP = {
+    late_off_the_ball: null, // already handled
+    waist_bender: null,
+    overset: null,
+    narrow_base: null,
+    skates: null,
+    skating: null,
+    early_disengage: null,
+    early_hands: null,
+    early_punch: null,
+    loss_of_leverage: {
+      title: "Regain leverage",
+      detail: "Lost pad level / leverage. Sink the hips and get under their pads.",
+      bucket: "fix",
+    },
+    high_pad_level: {
+      title: "Get lower",
+      detail: "Pad level climbed. Cue: sit in the stance and strike up through the breastplate.",
+      bucket: "fix",
+    },
+    balance_issue: {
+      title: "Clean up balance",
+      detail: "Weight looked outside the base. Keep the center over the middle of the stance.",
+      bucket: "fix",
+    },
+    occluded: {
+      title: "Film was cluttered",
+      detail: "Contact/occlusion made part of the read fuzzy — still trust the clear cues above.",
+      bucket: "fix",
+    },
+  };
+  for (const f of flags) {
+    const mapped = FLAG_MAP[f];
+    if (!mapped) continue;
+    const list = mapped.bucket === "keep" ? keep : fix;
+    if (!list.some((x) => x.title === mapped.title)) list.push({ title: mapped.title, detail: mapped.detail });
+  }
+
+  // Verdict
+  let verdict = "Solid rep — chase one detail next";
+  let summary = play === "run" ? "Run-block snapshot" : "Pass-pro snapshot";
+  if (fix.length >= 3) {
+    verdict = "Needs work — pick one cue and re-run";
+    summary = `Top fix: ${fix[0].title.toLowerCase()}`;
+  } else if (fix.length === 0 && keep.length > 0) {
+    verdict = "Clean snap — build on what’s working";
+    summary = keep[0].title;
+  } else if (fix.length === 1) {
+    verdict = "One clear coaching point";
+    summary = fix[0].title;
+  }
+
+  // Cap lists so coaches aren’t buried
+  return {
+    verdict,
+    summary,
+    fix: fix.slice(0, 4),
+    keep: keep.slice(0, 3),
+  };
+}
+
+function renderInsightList(el, items, emptyText) {
+  if (!items.length) {
+    el.innerHTML = `<li class="empty-cue">${emptyText}</li>`;
+    return;
+  }
+  el.innerHTML = items
+    .map(
+      (it) => `<li>
+        <strong>${it.title}</strong>
+        <span>${it.detail}</span>
+      </li>`
+    )
+    .join("");
+}
+
 function render(r) {
   currentResult = r;
+  const brief = buildCoachBrief(r);
   const label =
     r.jersey != null && r.jersey !== ""
       ? `#${r.jersey}`
       : r.ol_lock?.method === "manual_pick_xy"
-        ? "OL (click)"
+        ? "Locked OL"
         : "OL";
+
   $("title").textContent = label;
-  const lock = r.ol_lock?.method
-    ? ` · lock ${r.ol_lock.method}${r.ol_lock.jersey != null ? " #" + r.ol_lock.jersey : ""}`
-    : "";
-  $("subtitle").textContent = `${r.play_type || "pass"} · snap ${r.snap_frame ?? "—"} · ${
-    r.video_fps ? Number(r.video_fps).toFixed(0) + " fps" : ""
-  }${lock}`;
+  const play = r.play_type === "run" ? "Run block" : "Pass pro";
+  $("subtitle").textContent = `${play} · coach cues for this rep`;
 
   const trust = r.trust?.overall;
   if (trust) {
-    $("trust-overall").textContent = `${Math.round(trust.score * 100)}% ${trust.level}`;
-    $("trust-pill").className = `trust-pill ${trust.level}`;
+    const words = { high: "Clear", medium: "Okay", low: "Fuzzy" };
+    $("signal-overall").textContent = words[trust.level] || trust.level;
+    $("signal-pill").className = `signal-pill ${trust.level}`;
   } else {
-    $("trust-overall").textContent = "—";
-    $("trust-pill").className = "trust-pill";
+    $("signal-overall").textContent = "—";
+    $("signal-pill").className = "signal-pill";
   }
 
-  const ms = r.reaction_time_ms;
-  $("reaction").textContent = ms == null ? "—" : `${Math.round(ms)} ms`;
-  $("reaction-s").textContent =
-    r.initiated_by && r.initiated_by !== "unknown"
-      ? `${r.initiated_by}-first · ${r.reaction_time_frames ?? "—"} fr${r.late_off_the_ball ? " · late" : ""}`
-      : "snap → first move";
+  $("verdict-v").textContent = brief.verdict;
+  $("verdict-s").textContent = brief.summary;
+  renderInsightList($("fix-list"), brief.fix, "Nothing urgent — keep stacking good reps");
+  renderInsightList($("keep-list"), brief.keep, "No clear wins tagged yet");
 
-  const cells = [
-    ["Posture", pretty(r.posture_classification)],
-    ["Knee flex", deg(r.mean_knee_flexion_deg)],
-    ["Torso", deg(r.mean_torso_angle_deg)],
-    ["Hip low", num(r.hip_height_at_lowest, 2)],
-    ["Cadence", r.step_cadence_hz == null ? "—" : `${Number(r.step_cadence_hz).toFixed(1)} Hz`],
-    ["Set depth", num(r.set_depth, 2)],
-    ["Set width", num(r.set_width, 2)],
-    ["Base", num(r.mean_base_width, 2)],
-    ["Mirror r", num(r.lateral_match, 2)],
-    ["Anchor give", num(r.anchor_give, 2)],
-    ["Punch", r.punch_ms == null ? "—" : `${Math.round(r.punch_ms)} ms`],
-    ["Sustain", r.engagement_ms == null ? "—" : `${Math.round(r.engagement_ms)} ms`],
-  ];
-  $("summary-grid").innerHTML = cells
-    .map(([k, v]) => `<div class="cell"><div class="k">${k}</div><div class="v">${v}</div></div>`)
-    .join("");
-
-  const tags = $("tags");
-  tags.innerHTML = "";
-  for (const f of r.coach_language || []) {
-    const el = document.createElement("span");
-    el.className = "tag";
-    if (/late|loss|skates|gives|narrow|overset|occluded|slow|early|issue/.test(f)) el.classList.add("bad");
-    else if (/quicks|mirror|redirect|anchor|sustain|balance|wide|punch|get_off|movement/.test(f)) el.classList.add("ok");
-    else if (/bender|placement|pull|climb/.test(f)) el.classList.add("hot");
-    el.textContent = f.replaceAll("_", " ");
-    tags.appendChild(el);
+  // Keyframe thumbnails
+  const kfs = r.keyframes || [];
+  const kfBlock = $("keyframe-block");
+  const kfRow = $("keyframe-row");
+  if (kfs.length) {
+    kfBlock.hidden = false;
+    kfRow.innerHTML = kfs
+      .map(
+        (k) => `<figure>
+          <img src="${k.url}" alt="${k.label}" loading="lazy" />
+          <figcaption>${k.label}</figcaption>
+        </figure>`
+      )
+      .join("");
+  } else {
+    kfBlock.hidden = true;
+    kfRow.innerHTML = "";
   }
 
-  const mods = r.modules || {};
-  const trustMods = r.trust?.modules || {};
-  const order = [
-    ["initial_quicks", "1. Initial quicks / get-off"],
-    ["footwork", "2. Footwork"],
-    ["mirror_redirect", "3. Mirror / redirect"],
-    ["anchor", "4. Anchor"],
-    ["body_position", "5. Body position"],
-    ["hands", "6. Hands"],
-    ["sustain", "7. Sustain"],
-    ["point_of_attack", "POA (run)"],
-    ["movement_in_space", "Movement in space"],
-    ["balance", "Balance"],
-  ];
-  $("modules").innerHTML = order
-    .map(([key, title]) => moduleCard(title, mods[key], trustMods[key]))
-    .join("");
+  $("export-pdf").disabled = !(r.report_url || (r.id && r.id !== "demo"));
+  $("on-field").disabled = !r.id;
 
   if (r.overlay_url) {
     $("preview").src = r.overlay_url;
@@ -269,41 +495,12 @@ function render(r) {
   renderCompare();
 }
 
-function moduleCard(title, data, trust) {
-  const trustBar = trust
-    ? `<div class="trust-bar ${trust.level}" title="${(trust.reasons || []).join(", ")}">
-         <span>Trust ${Math.round(trust.score * 100)}%</span>
-         <i style="width:${Math.round(trust.score * 100)}%"></i>
-       </div>`
-    : "";
-  if (!data) {
-    return `<article class="mod"><h3>${title}</h3>${trustBar}<p class="na">not computed</p></article>`;
-  }
-  if (data.available === false) {
-    return `<article class="mod"><h3>${title}</h3>${trustBar}<p class="na">${(data.notes || ["unavailable"]).join(", ")}</p></article>`;
-  }
-  const skip = new Set([
-    "available",
-    "notes",
-    "coach_flags",
-    "mode",
-    "displacement_direction",
-    "posture_frame_counts",
-  ]);
-  const rows = Object.entries(data)
-    .filter(([k, v]) => !skip.has(k) && v !== null && v !== undefined && typeof v !== "object")
-    .slice(0, 8)
-    .map(([k, v]) => {
-      let show = v;
-      if (typeof v === "number") show = Number.isInteger(v) ? v : Number(v).toFixed(3);
-      if (typeof v === "boolean") show = v ? "yes" : "no";
-      return `<dt>${k.replaceAll("_", " ")}</dt><dd>${show}</dd>`;
-    })
-    .join("");
-  const flags = (data.coach_flags || []).join(", ");
-  return `<article class="mod"><h3>${title}</h3>${trustBar}<dl>${rows || "<p class='na'>no scalars</p>"}</dl>${
-    flags ? `<p class="muted" style="margin:.6rem 0 0;font-size:.75rem">${flags}</p>` : ""
-  }</article>`;
+function briefLine(r) {
+  if (!r) return "—";
+  const b = buildCoachBrief(r);
+  if (b.fix[0]) return `Fix: ${b.fix[0].title}`;
+  if (b.keep[0]) return `Keep: ${b.keep[0].title}`;
+  return b.verdict;
 }
 
 function renderCompare() {
@@ -312,72 +509,66 @@ function renderCompare() {
   const b = currentResult;
   if (!a && !b) {
     grid.innerHTML = "";
-    $("compare-hint").textContent = "Pin a result, run another rep, then compare";
+    $("compare-hint").textContent = "Save a rep, run another, see what changed";
     return;
   }
-  if (a && !b) {
-    $("compare-hint").textContent = "A pinned — run another analysis for B";
-  } else if (a && b && a.id === b.id) {
-    $("compare-hint").textContent = "Pin a different rep to compare against this one";
-  } else {
-    $("compare-hint").textContent = "A = pinned · B = current";
-  }
+  if (a && !b) $("compare-hint").textContent = "A saved — analyze another rep for B";
+  else if (a && b && a.id === b.id) $("compare-hint").textContent = "Save a different rep to compare";
+  else $("compare-hint").textContent = "A = saved · B = this rep";
 
   const rows = [
-    ["Label", (r) => (r.jersey != null ? `#${r.jersey}` : r.ol_lock?.method || "OL")],
-    ["Play", (r) => r.play_type || "—"],
-    ["Reaction ms", (r) => (r.reaction_time_ms == null ? "—" : Math.round(r.reaction_time_ms))],
-    ["Posture", (r) => pretty(r.posture_classification)],
-    ["Knee flex", (r) => (r.mean_knee_flexion_deg == null ? "—" : `${Math.round(r.mean_knee_flexion_deg)}°`)],
-    ["Set depth", (r) => num(r.set_depth, 2)],
-    ["Set width", (r) => num(r.set_width, 2)],
-    ["Mirror r", (r) => num(r.lateral_match, 2)],
-    ["Anchor give", (r) => num(r.anchor_give, 2)],
-    ["Sustain ms", (r) => (r.engagement_ms == null ? "—" : Math.round(r.engagement_ms))],
-    ["Trust", (r) => (r.trust?.overall ? `${Math.round(r.trust.overall.score * 100)}%` : "—")],
-    ["Flags", (r) => (r.coach_language || []).slice(0, 4).join(", ") || "—"],
+    ["Player", (r) => (r.jersey != null ? `#${r.jersey}` : "OL")],
+    ["Play", (r) => (r.play_type === "run" ? "Run" : "Pass")],
+    ["Verdict", (r) => buildCoachBrief(r).verdict],
+    ["Top fix", (r) => buildCoachBrief(r).fix[0]?.title || "—"],
+    ["Top strength", (r) => buildCoachBrief(r).keep[0]?.title || "—"],
+    ["Get-off", (r) => {
+      if (r.late_off_the_ball) return "Late";
+      if (r.reaction_time_ms == null) return "—";
+      if (r.reaction_time_ms <= 180) return "Quick";
+      if (r.reaction_time_ms <= 250) return "Okay";
+      return "Slow";
+    }],
+    ["Anchor", (r) => {
+      if (r.anchor_give == null) return "—";
+      if (r.anchor_give <= 0.1) return "Firm";
+      if (r.anchor_give <= 0.18) return "Some give";
+      return "Gave ground";
+    }],
+    ["Hands", (r) => {
+      if (r.punch_ms == null) return "—";
+      if (r.punch_ms <= 280) return "On time";
+      if (r.punch_ms <= 400) return "Okay";
+      return "Late";
+    }],
   ];
 
   grid.innerHTML = `
-    <div class="cmp-col head">Metric</div>
+    <div class="cmp-col head">Cue</div>
     <div class="cmp-col head">A ${a ? "" : "(empty)"}</div>
     <div class="cmp-col head">B ${b ? "" : "(empty)"}</div>
     ${rows
       .map(([name, fn]) => {
         const va = a ? fn(a) : "—";
         const vb = b ? fn(b) : "—";
-        const delta = numericDelta(va, vb);
         return `<div class="cmp-col">${name}</div>
           <div class="cmp-col">${va}</div>
-          <div class="cmp-col">${vb}${delta}</div>`;
+          <div class="cmp-col">${vb}</div>`;
       })
       .join("")}
   `;
 }
 
-function numericDelta(a, b) {
-  const na = parseFloat(String(a).replace(/[^\d.-]/g, ""));
-  const nb = parseFloat(String(b).replace(/[^\d.-]/g, ""));
-  if (!Number.isFinite(na) || !Number.isFinite(nb) || a === "—" || b === "—") return "";
-  const d = nb - na;
-  if (Math.abs(d) < 1e-6) return `<span class="delta flat"> =</span>`;
-  const sign = d > 0 ? "+" : "";
-  return `<span class="delta ${d > 0 ? "up" : "down"}"> ${sign}${d.toFixed(1)}</span>`;
-}
-
 function pretty(v) {
   return v ? String(v).replaceAll("_", " ") : "—";
 }
-function deg(v) {
-  return v == null ? "—" : `${Math.round(v)}°`;
-}
-function num(v, d) {
-  return v == null ? "—" : Number(v).toFixed(d);
-}
+
 function setBusy(busy, msg, percent, stage) {
   $("run").disabled = busy;
   $("demo").disabled = busy;
   $("pin-compare").disabled = busy;
+  $("export-pdf").disabled = busy || !currentResult;
+  $("on-field").disabled = busy || !currentResult;
   const panel = $("progress-panel");
   const veil = $("busy-veil");
   if (busy) {
@@ -388,6 +579,10 @@ function setBusy(busy, msg, percent, stage) {
     panel.hidden = true;
     veil.hidden = true;
     setStatus(msg || "");
+    if (currentResult) {
+      $("export-pdf").disabled = !(currentResult.report_url || (currentResult.id && currentResult.id !== "demo"));
+      $("on-field").disabled = !currentResult.id;
+    }
   }
 }
 

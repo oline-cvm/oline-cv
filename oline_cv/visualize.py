@@ -99,35 +99,23 @@ def write_overlay_video(
             cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (40, 200, 120), 2)
 
         m = body_by_idx.get(pose.frame_idx)
-        state = getattr(pose, "track_state", None) or "—"
-        tconf = float(getattr(pose, "track_confidence", 0.0) or 0.0)
-        tid = getattr(pose, "track_id", None)
-        hud = [
-            label,
-            f"frame {pose.frame_idx}",
-            f"{state} {tconf:.2f}",
-        ]
-        if tid is not None:
-            hud.append(f"bsort#{tid}")
+        state = getattr(pose, "track_state", None) or ""
+        hud = [label]
         if pose.frame_idx == snap.snap_frame:
             hud.append("SNAP")
-        if quicks.reaction_time_ms is not None and pose.frame_idx >= snap.snap_frame:
-            if pose.frame_idx == (quicks.first_foot_movement_frame or -1) or pose.frame_idx == (
-                quicks.first_hip_movement_frame or -1
-            ):
-                hud.append(f"REACT {quicks.reaction_time_ms:.0f}ms")
         if quicks.first_foot_movement_frame == pose.frame_idx:
             hud.append("FOOT FIRST")
         if quicks.first_hip_movement_frame == pose.frame_idx:
             hud.append("HIP FIRST")
-        if m is not None:
-            if m.knee_flexion_angle_mean is not None:
-                hud.append(f"knee {m.knee_flexion_angle_mean:.0f}")
-            if m.torso_angle is not None:
-                hud.append(f"torso {m.torso_angle:.0f}")
-            if m.hip_height is not None:
-                hud.append(f"hip {m.hip_height:.2f}")
-            hud.append(m.posture)
+        if quicks.reaction_time_ms is not None and pose.frame_idx >= snap.snap_frame:
+            if pose.frame_idx == (quicks.first_foot_movement_frame or -1) or pose.frame_idx == (
+                quicks.first_hip_movement_frame or -1
+            ):
+                hud.append("GET-OFF")
+        if state == "LOST":
+            hud.append("TRACK LOST")
+        if m is not None and m.posture and m.posture != "unknown":
+            hud.append(str(m.posture).replace("_", " ").upper())
 
         _draw_hud(img, hud, jersey)
         writer.write(img)
@@ -214,12 +202,10 @@ def _draw_hud(img: np.ndarray, lines: list[str], _jersey: int | None = None) -> 
         scale = 1.05 if i == 0 else 0.72
         thickness = 2 if i == 0 else 2
         color = (120, 255, 180) if i == 0 else (230, 240, 230)
-        if line == "SNAP" or line.startswith("REACT") or "FIRST" in line:
+        if line == "SNAP" or line.startswith("GET-OFF") or "FIRST" in line:
             color = (80, 210, 255)
-        if line.startswith("LOST") or line.startswith("UNCERTAIN"):
+        if line.startswith("TRACK LOST"):
             color = (40, 40, 255)
-        if line.startswith("REIDENTIFIED") or line.startswith("TRACKED"):
-            color = (40, 220, 120)
         cv2.putText(img, line, (24, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
         y += 26
 

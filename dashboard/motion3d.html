@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Phase 2 · Motion Reconstruction Review</title>
+<style>
+  :root {
+    --bg: #0b0f0d;
+    --panel: #131a17;
+    --line: #22302a;
+    --text: #e8efe9;
+    --muted: #8fa398;
+    --good: #6edc8a;
+    --warn: #f0aa3c;
+    --bad: #e05a5a;
+    --accent: #7cc4ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 22px 28px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  }
+  h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  a { color: var(--accent); }
+  main { padding: 24px 28px 64px; max-width: 1500px; margin: 0 auto; }
+  section { margin-bottom: 34px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .9px;
+       color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+          overflow: hidden; }
+  .card h3 { margin: 0; padding: 13px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }
+  .card .body { padding: 14px 16px; }
+  video, .card img { width: 100%; display: block; background: #000; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 11px 16px;
+            font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); }
+  .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px;
+            margin-right: 6px; vertical-align: -1px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
+  .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .6px; }
+  .stat .v { font-size: 21px; font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stat .n { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .ok { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  ul.warns { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13.5px; }
+  ul.warns li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .note { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
+          border: 1px solid currentColor; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Phase 2 — Motion Reconstruction Review</h1>
+  <span class="sub" id="hdr-sub">loading…</span>
+  <span class="sub" style="margin-left:auto; display:flex; gap:14px; align-items:center">
+    <a href="/viewer3d?clip=footage" style="font-weight:650; color:var(--good)">Open 3D replay →</a>
+    <a href="/">← dashboard</a>
+  </span>
+</header>
+
+<main>
+  <section>
+    <h2>Run status</h2>
+    <div class="stats" id="stats"></div>
+    <p class="note" id="axis-note"></p>
+  </section>
+
+  <section>
+    <h2>Reconstructed body over the film</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>SMPL mesh, camera space</h3>
+        <video src="/outputs/motion3d/footage/smpl_overlay_web.mp4" controls loop muted playsinline></video>
+        <div class="legend">
+          The mesh is posed from <code>motion_raw.npz</code> and projected with WHAM's renderer.
+          If it tracks the lineman's limbs, the reconstruction is sound.
+        </div>
+      </div>
+      <div class="card">
+        <h3>Identity association</h3>
+        <video src="/outputs/motion3d/footage/association_debug_web.mp4" controls loop muted playsinline></video>
+        <div class="legend">
+          <span><i class="swatch" style="background:#58c4e8"></i>target (BoT-SORT)</span>
+          <span><i class="swatch" style="background:#6edc8a"></i>selected</span>
+          <span><i class="swatch" style="background:#dc4646"></i>rejected</span>
+          <span><i class="swatch" style="background:#3caaf0"></i>bridged</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Is it the right player?</h2>
+    <div class="card">
+      <h3>Selected body, zoomed — jersey should read 76 in every tile</h3>
+      <img src="/outputs/motion3d/footage/association_selected.jpg" alt="selected player crops" />
+    </div>
+  </section>
+
+  <section>
+    <h2>Frames needing a second look</h2>
+    <div class="card">
+      <h3>Bridged and ambiguous frames</h3>
+      <img src="/outputs/motion3d/footage/association_flagged.jpg" alt="flagged frames" />
+      <div class="legend" id="flagged-note"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Per-frame confidence</h2>
+    <div class="card"><div class="body">
+      <canvas id="conf" height="150" style="width:100%"></canvas>
+      <p class="note">Observed frames in green, interpolated frames in orange.
+        Interpolated boxes carry half the confidence of their weaker neighbour.</p>
+    </div></div>
+  </section>
+
+  <section>
+    <h2>Warnings reported by the run</h2>
+    <div class="card"><div class="body"><ul class="warns" id="warns"></ul></div></div>
+  </section>
+
+  <section>
+    <h2>Arrays in motion_raw.npz</h2>
+    <div class="card"><div class="body">
+      <table id="arrays"><thead><tr><th>array</th><th>shape</th><th>meaning</th></tr></thead>
+      <tbody></tbody></table>
+    </div></div>
+  </section>
+</main>
+
+<script src="/static/motion3d.js?v=1"></script>
+</body>
+</html>

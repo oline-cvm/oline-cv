@@ -13,7 +13,7 @@
   <div class="shell">
     <aside class="rail">
       <div class="logo">OLINE</div>
-      <p class="rail-note">Single-player OL breakdown<br/>Yeager framework v1</p>
+      <p class="rail-note">Sideline film → coach cues<br/>one player, one rep</p>
 
       <form id="form" class="form">
         <label class="file">
@@ -23,10 +23,10 @@
 
         <div class="pick-box" id="pick-box">
           <div class="pick-head">
-            <span>Click-to-lock</span>
+            <span>Lock player</span>
             <button type="button" class="linkish" id="clear-pick">Clear</button>
           </div>
-          <p class="pick-hint" id="pick-hint">Load film, then click the OL on the preview</p>
+          <p class="pick-hint" id="pick-hint">Load film, then tap the OL</p>
           <div class="pick-stage" id="pick-stage">
             <video id="pick-video" muted playsinline></video>
             <canvas id="pick-canvas"></canvas>
@@ -35,7 +35,7 @@
           <p class="pick-coord" id="pick-coord">auto lock</p>
         </div>
 
-        <label>Jersey <span class="opt">optional OCR</span>
+        <label>Jersey <span class="opt">optional</span>
           <input type="number" id="jersey" placeholder="auto" min="0" max="99" />
         </label>
 
@@ -46,11 +46,15 @@
           </select>
         </label>
 
-        <label>Snap frame <span class="opt">optional</span>
+        <label class="advanced-toggle">
+          <input type="checkbox" id="show-advanced" />
+          Show optional snap frame
+        </label>
+        <label id="snap-wrap" hidden>Snap frame <span class="opt">optional</span>
           <input type="number" id="snap" placeholder="auto" min="0" />
         </label>
 
-        <button type="submit" id="run">Run</button>
+        <button type="submit" id="run">Analyze rep</button>
         <button type="button" class="secondary" id="demo">Last result</button>
       </form>
 
@@ -87,47 +91,63 @@
           <p class="busy-pct" id="busy-pct">0%</p>
         </div>
       </div>
+
       <header class="head">
         <div>
-          <h1 id="title">OL</h1>
-          <p id="subtitle" class="muted">Auto-locks an OL · click or jersey OCR · full-frame film</p>
+          <h1 id="title">Ready</h1>
+          <p id="subtitle" class="muted">Upload a rep. We’ll tell you what to fix on the next one.</p>
         </div>
         <div class="head-actions">
-          <div class="trust-pill" id="trust-pill" title="Overall signal trust">
-            <span class="k">Trust</span>
-            <span class="v" id="trust-overall">—</span>
+          <div class="signal-pill" id="signal-pill" title="How clear the film read was">
+            <span class="k">Film read</span>
+            <span class="v" id="signal-overall">—</span>
           </div>
-          <button type="button" class="secondary small" id="pin-compare">Pin for compare</button>
-          <div class="tags" id="tags"></div>
+          <button type="button" class="secondary small" id="pin-compare">Save as compare A</button>
+          <button type="button" class="secondary small" id="export-pdf" disabled>Export PDF</button>
+          <button type="button" class="secondary small" id="on-field" disabled>3D replay (SMPL)</button>
         </div>
       </header>
 
-      <div class="workspace">
+      <div class="workspace coach-workspace">
         <div class="viewer">
           <video id="preview" controls playsinline></video>
-          <div class="viewer-empty" id="empty">No preview</div>
+          <div class="viewer-empty" id="empty">Film preview shows here</div>
         </div>
 
-        <div class="metrics">
-          <div class="hero">
-            <div class="k">Reaction</div>
-            <div class="v" id="reaction">—</div>
-            <div class="s" id="reaction-s">snap → first move</div>
+        <aside class="coach-panel" id="coach-panel">
+          <div class="verdict" id="verdict">
+            <div class="verdict-k">This snap</div>
+            <div class="verdict-v" id="verdict-v">Run a rep to get coaching cues</div>
+            <p class="verdict-s" id="verdict-s">Focus on get-off, posture, hands, and anchor.</p>
           </div>
 
-          <div class="grid" id="summary-grid"></div>
-        </div>
+          <section class="insight-block">
+            <h2>Fix next</h2>
+            <ul class="insight-list fix" id="fix-list">
+              <li class="empty-cue">No issues yet</li>
+            </ul>
+          </section>
+
+          <section class="insight-block">
+            <h2>Keep doing</h2>
+            <ul class="insight-list keep" id="keep-list">
+              <li class="empty-cue">—</li>
+            </ul>
+          </section>
+          <section class="insight-block" id="keyframe-block" hidden>
+            <h2>Reference stills</h2>
+            <div class="keyframe-row" id="keyframe-row"></div>
+          </section>
+        </aside>
       </div>
 
       <section class="compare" id="compare">
         <div class="compare-head">
-          <h2>Side-by-side</h2>
-          <p class="muted" id="compare-hint">Pin a result, run another rep, then compare</p>
+          <h2>Rep vs rep</h2>
+          <p class="muted" id="compare-hint">Save a rep, run another, see what improved</p>
         </div>
         <div class="compare-grid" id="compare-grid"></div>
       </section>
-
-      <div class="modules" id="modules"></div>
     </section>
   </div>
   <script src="/static/app.js"></script>

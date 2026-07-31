@@ -308,6 +308,38 @@ def analyze_video(
     Path(output_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
     result["output_json"] = output_json
 
+    # Phase 1 of the 3D pipeline: serialize the track while frames are still in RAM.
+    if config.motion3d_export_dir:
+        _prog(86, "Exporting track for 3D reconstruction…", "overlay")
+        try:
+            from oline_cv.motion3d.track_export import export_tracks
+
+            manifest = export_tracks(
+                video_path,
+                ol_poses,
+                frames,
+                fps,
+                width,
+                height,
+                config.motion3d_export_dir,
+                target_jersey=config.target_jersey,
+                ol_lock=ol_lock,
+                snap_frame=snap.snap_frame,
+                set_end=set_end,
+                crop_size=config.motion3d_crop_size,
+                crop_pad=config.motion3d_crop_pad,
+                max_interp_gap=config.motion3d_max_interp_gap,
+                save_full_frames=config.motion3d_save_full_frames,
+            )
+            result["motion3d_export"] = {
+                "dir": str(config.motion3d_export_dir),
+                "tracks_json": str(Path(config.motion3d_export_dir) / "tracks.json"),
+                "stats": manifest.stats(),
+            }
+        except Exception as exc:
+            print(f"  motion3d export failed: {exc}", flush=True)
+            result["motion3d_export"] = {"error": str(exc)}
+
     if config.write_overlay_video:
         if overlay_path is None:
             overlay_path = str(Path(video_path).with_suffix("")) + config.overlay_suffix

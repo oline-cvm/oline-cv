@@ -152,6 +152,15 @@ class AnalysisConfig:
     set_end_frame_override: int | None = None
     pose_lost_end_frames: int = 10
 
+    # --- 3D motion reconstruction (Phase 1 export) ---
+    # When set, analyze_video writes tracks.json + frames/ + crops/ here for the
+    # world-grounded HMR stage. Off by default: the export is disk-heavy.
+    motion3d_export_dir: str | None = None
+    motion3d_crop_size: int = 256
+    motion3d_crop_pad: float = 0.25
+    motion3d_max_interp_gap: int = 8
+    motion3d_save_full_frames: bool = True
+
     # --- Output ---
     write_overlay_video: bool = True
     overlay_suffix: str = "_overlay.mp4"
