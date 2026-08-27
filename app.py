@@ -155,40 +155,91 @@ def _remember(packed: dict[str, Any]) -> None:
         del RECENT[0 : len(RECENT) - 8]
 
 
+def _parse_jersey(jersey: str) -> int | None:
+    return int(str(jersey).strip()) if str(jersey).strip().isdigit() else None
+
+
+def _parse_pick(pick_x: str, pick_y: str) -> tuple[float, float] | None:
+    try:
+        if str(pick_x).strip() != "" and str(pick_y).strip() != "":
+            px, py = float(pick_x), float(pick_y)
+            if 0.0 <= px <= 1.0 and 0.0 <= py <= 1.0:
+                return (px, py)
+    except ValueError:
+        return None
+    return None
+
+
+def _save_upload(upload: UploadFile, job_id: str, tag: str) -> str:
+    suffix = Path(upload.filename or "clip.mp4").suffix or ".mp4"
+    dest = UPLOAD_DIR / f"{job_id}{tag}{suffix}"
+    with dest.open("wb") as f:
+        shutil.copyfileobj(upload.file, f)
+    return str(dest)
+
+
+def _has_upload(upload: UploadFile | None) -> bool:
+    return upload is not None and bool(getattr(upload, "filename", ""))
+
+
 @app.post("/api/analyze")
 async def analyze(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    # Both camera slots are optional; supply at least one. Provide both to fuse
+    # sideline + endzone and recover the player through occlusion.
+    file: UploadFile | None = File(None),
     jersey: str = Form(""),
     play_type: str = Form("pass"),
     snap_frame: int | None = Form(None),
     pick_x: str = Form(""),
     pick_y: str = Form(""),
+    role: str = Form("sideline"),
+    file2: UploadFile | None = File(None),
+    jersey2: str = Form(""),
+    snap_frame2: int | None = Form(None),
+    pick_x2: str = Form(""),
+    pick_y2: str = Form(""),
+    role2: str = Form("endzone"),
 ) -> JSONResponse:
     job_id = uuid.uuid4().hex[:12]
-    suffix = Path(file.filename or "clip.mp4").suffix or ".mp4"
-    video_path = UPLOAD_DIR / f"{job_id}{suffix}"
-    with video_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
 
-    jersey_i: int | None = None
-    if str(jersey).strip().isdigit():
-        jersey_i = int(str(jersey).strip())
+    specs: list[dict[str, Any]] = []
+    if _has_upload(file):
+        primary_role = (role or "sideline").strip().lower()
+        specs.append(
+            {
+                "path": _save_upload(file, job_id, f"__{primary_role}"),
+                "role": primary_role,
+                "jersey": _parse_jersey(jersey),
+                "pick_xy": _parse_pick(pick_x, pick_y),
+                "snap_frame": snap_frame,
+            }
+        )
+    if _has_upload(file2):
+        second_role = (role2 or "endzone").strip().lower()
+        specs.append(
+            {
+                "path": _save_upload(file2, job_id, f"__{second_role}"),
+                "role": second_role,
+                "jersey": _parse_jersey(jersey2),
+                "pick_xy": _parse_pick(pick_x2, pick_y2),
+                "snap_frame": snap_frame2,
+            }
+        )
 
-    pick_xy: tuple[float, float] | None = None
-    try:
-        if str(pick_x).strip() != "" and str(pick_y).strip() != "":
-            px, py = float(pick_x), float(pick_y)
-            if 0.0 <= px <= 1.0 and 0.0 <= py <= 1.0:
-                pick_xy = (px, py)
-    except ValueError:
-        pick_xy = None
+    if not specs:
+        return JSONResponse(
+            {"error": "Add at least one film (sideline or endzone)."}, status_code=400
+        )
 
+    multiview = len(specs) > 1
     JOBS[job_id] = {
         "id": job_id,
         "status": "queued",
-        "jersey": jersey_i,
-        "pick_xy": pick_xy,
+        "jersey": specs[0]["jersey"],
+        "pick_xy": specs[0]["pick_xy"],
+        "multiview": multiview,
+        "views": [s["role"] for s in specs],
         "progress": "Queued",
         "percent": 0,
         "stage": "queued",
@@ -196,9 +247,14 @@ async def analyze(
         "result": None,
         "error": None,
     }
-    background_tasks.add_task(
-        _run_job, job_id, str(video_path), jersey_i, play_type, snap_frame, pick_xy
-    )
+
+    if multiview:
+        background_tasks.add_task(_run_multiview_job, job_id, specs, play_type)
+    else:
+        s = specs[0]
+        background_tasks.add_task(
+            _run_job, job_id, s["path"], s["jersey"], play_type, s["snap_frame"], s["pick_xy"]
+        )
     return JSONResponse({"job_id": job_id})
 
 
@@ -207,12 +263,15 @@ def job_status(job_id: str) -> JSONResponse:
     job = JOBS.get(job_id)
     if not job:
         return JSONResponse({"error": "not_found"}, status_code=404)
-    return JSONResponse(job)
+    out = dict(job)
+    if out.get("result"):
+        out["result"] = _with_playable_overlay(out["result"])
+    return JSONResponse(out)
 
 
 @app.get("/api/recent")
 def recent_results() -> JSONResponse:
-    return JSONResponse({"results": RECENT[-8:]})
+    return JSONResponse({"results": [_with_playable_overlay(r) for r in RECENT[-8:]]})
 
 
 STAGE_ORDER = ("ingest", "lock", "track", "metrics", "overlay", "encode", "done")
@@ -230,6 +289,80 @@ def _set_progress(job: dict[str, Any], percent: float, message: str, stage: str)
             if s not in done:
                 done.append(s)
     job["stages_done"] = done
+
+
+def _pack_views(job_id: str, view_arts: list) -> list[dict[str, Any]]:
+    """Web-encode each view's overlay and surface per-view coverage for the UI."""
+    packed_views: list[dict[str, Any]] = []
+    for art in view_arts:
+        overlay_url = None
+        src = getattr(art, "overlay_path", None)
+        if src and Path(src).exists():
+            web = ensure_web_mp4(src, str(OUTPUT_DIR / f"{job_id}__{art.role}_web.mp4"))
+            if web:
+                overlay_url = f"/outputs/{Path(web).name}"
+        packed_views.append(
+            {
+                "role": art.role,
+                "overlay_url": overlay_url,
+                "coverage": round(art.coverage, 4),
+                "covered_frames": art.covered_frames,
+                "total_frames": art.total_frames,
+                "snap_frame": art.snap_frame,
+                "frames_lost": art.frames_lost,
+                "trust_overall": round(art.trust_overall, 4),
+            }
+        )
+    return packed_views
+
+
+def _finalize_job(
+    job: dict[str, Any],
+    job_id: str,
+    result: dict[str, Any],
+    out_overlay: str,
+    out_json: str,
+    jersey: int | None,
+    view_arts: list | None = None,
+) -> None:
+    """Shared tail: web-encode preview, keyframes, pack, PDF, store result."""
+    _set_progress(job, 95, "Encoding web preview…", "encode")
+    web_path = ensure_web_mp4(out_overlay, str(OUTPUT_DIR / f"{job_id}_web.mp4"))
+
+    _set_progress(job, 97, "Building coach PDF report…", "encode")
+    kf_dir = OUTPUT_DIR / f"{job_id}_keyframes"
+    source_video = (result.get("video") or {}).get("path")
+    still_src = out_overlay if Path(out_overlay).exists() else source_video
+    keyframes = extract_keyframes(still_src, result, kf_dir)
+    for kf in keyframes:
+        kf["url"] = f"/outputs/{job_id}_keyframes/{Path(kf['path']).name}"
+
+    packed = _pack_result(jersey, result, web_path, Path(out_json).name)
+    packed["id"] = job_id
+    packed["keyframes"] = [
+        {"label": k["label"], "frame_idx": k["frame_idx"], "url": k["url"]} for k in keyframes
+    ]
+
+    if result.get("multiview"):
+        packed["multiview"] = result["multiview"]
+        if view_arts:
+            packed["views"] = _pack_views(job_id, view_arts)
+
+    pdf_path = OUTPUT_DIR / f"{job_id}_report.pdf"
+    try:
+        write_coach_pdf(packed, result, keyframes, pdf_path)
+        packed["report_url"] = f"/outputs/{pdf_path.name}"
+    except Exception as pdf_exc:
+        packed["report_url"] = None
+        packed["report_error"] = str(pdf_exc)
+
+    job["video_path"] = source_video
+    job["analysis_json"] = out_json
+    job["result"] = packed
+    _remember(packed)
+    job["status"] = "done"
+    _set_progress(job, 100, "Done", "done")
+    job["stages_done"] = list(STAGE_ORDER)
 
 
 def _run_job(
@@ -275,37 +408,70 @@ def _run_job(
             overlay_path=out_overlay,
             progress_cb=on_progress,
         )
-        _set_progress(job, 95, "Encoding web preview…", "encode")
-        web_path = ensure_web_mp4(out_overlay, str(OUTPUT_DIR / f"{job_id}_web.mp4"))
+        _finalize_job(job, job_id, result, out_overlay, out_json, jersey)
+    except Exception as exc:
+        job["status"] = "error"
+        job["error"] = str(exc)
+        job["progress"] = "Failed"
+        job["stage"] = "error"
 
-        # Keyframe stills + PDF coach report
-        _set_progress(job, 97, "Building coach PDF report…", "encode")
-        kf_dir = OUTPUT_DIR / f"{job_id}_keyframes"
-        # Prefer overlay film so stills include skeleton
-        still_src = out_overlay if Path(out_overlay).exists() else video_path
-        keyframes = extract_keyframes(still_src, result, kf_dir)
-        for kf in keyframes:
-            kf["url"] = f"/outputs/{job_id}_keyframes/{Path(kf['path']).name}"
 
-        packed = _pack_result(jersey, result, web_path, Path(out_json).name)
-        packed["id"] = job_id
-        packed["keyframes"] = [{"label": k["label"], "frame_idx": k["frame_idx"], "url": k["url"]} for k in keyframes]
+def _run_multiview_job(
+    job_id: str,
+    specs: list[dict[str, Any]],
+    play_type: str,
+) -> None:
+    """Two-view (sideline + endzone) fusion job — occlusion-robust analysis."""
+    job = JOBS[job_id]
+    try:
+        job["status"] = "running"
+        roles = " + ".join(s["role"] for s in specs)
+        _set_progress(job, 3, f"Detecting lineman across {roles}…", "lock")
 
-        pdf_path = OUTPUT_DIR / f"{job_id}_report.pdf"
-        try:
-            write_coach_pdf(packed, result, keyframes, pdf_path)
-            packed["report_url"] = f"/outputs/{pdf_path.name}"
-        except Exception as pdf_exc:
-            packed["report_url"] = None
-            packed["report_error"] = str(pdf_exc)
+        from oline_cv.multiview import ViewInput, analyze_multiview
 
-        job["video_path"] = video_path
-        job["analysis_json"] = out_json
-        job["result"] = packed
-        _remember(packed)
-        job["status"] = "done"
-        _set_progress(job, 100, "Done", "done")
-        job["stages_done"] = list(STAGE_ORDER)
+        base_cfg = AnalysisConfig(
+            write_overlay_video=True,
+            overlay_zoom_on_athlete=False,
+            play_type="run" if play_type == "run" else "pass",
+            pose_model="yolov8m-pose.pt",
+        )
+        views = [
+            ViewInput(
+                video_path=s["path"],
+                role=s["role"],
+                pick_xy=s["pick_xy"],
+                jersey=s["jersey"],
+                snap_frame=s["snap_frame"],
+            )
+            for s in specs
+        ]
+
+        out_json = str(OUTPUT_DIR / f"{job_id}_analysis.json")
+
+        def on_progress(pct: float, msg: str, stage: str = "analyze") -> None:
+            _set_progress(job, pct, msg, stage)
+
+        primary_role = specs[0]["role"]
+        fused, view_arts = analyze_multiview(
+            views,
+            base_config=base_cfg,
+            output_json=out_json,
+            artifact_dir=str(OUTPUT_DIR),
+            artifact_prefix=job_id,
+            progress_cb=on_progress,
+            primary_role=primary_role,
+        )
+
+        primary_art = next(
+            (a for a in view_arts if a.role == primary_role), view_arts[0]
+        )
+        primary_overlay = primary_art.overlay_path or str(
+            OUTPUT_DIR / f"{job_id}__{primary_role}_overlay.mp4"
+        )
+        _finalize_job(
+            job, job_id, fused, primary_overlay, out_json, specs[0]["jersey"], view_arts
+        )
     except Exception as exc:
         job["status"] = "error"
         job["error"] = str(exc)
@@ -333,7 +499,7 @@ def job_report_pdf(job_id: str):
         packed = _pack_result(full.get("target_jersey"), full, None, analysis.name)
         packed["id"] = job_id
         kf_dir = OUTPUT_DIR / f"{job_id}_keyframes"
-        video_guess = next(UPLOAD_DIR.glob(f"{job_id}.*"), None)
+        video_guess = next(iter(sorted(UPLOAD_DIR.glob(f"{job_id}*"))), None)
         keyframes = []
         if video_guess:
             keyframes = extract_keyframes(str(video_guess), full, kf_dir)
@@ -370,17 +536,32 @@ def _job_analysis_path(job_id: str) -> Path | None:
     return None
 
 
-def _job_video_url(job_id: str, packed: dict[str, Any] | None = None) -> str | None:
+def _playable_overlay_url(job_id: str, packed: dict[str, Any] | None = None) -> str | None:
+    """Prefer H.264 *_web.mp4; raw OpenCV mp4v overlays often won't play in browsers."""
+    if job_id and job_id != "demo":
+        web = OUTPUT_DIR / f"{job_id}_web.mp4"
+        if web.exists():
+            return f"/outputs/{web.name}"
+        overlay = OUTPUT_DIR / f"{job_id}_overlay.mp4"
+        if overlay.exists():
+            return f"/outputs/{overlay.name}"
     packed = packed or {}
-    video_url = packed.get("overlay_url")
-    if video_url:
-        return video_url
-    web = OUTPUT_DIR / f"{job_id}_web.mp4"
-    if web.exists():
-        return f"/outputs/{web.name}"
-    if (OUTPUT_DIR / f"{job_id}_overlay.mp4").exists():
-        return f"/outputs/{job_id}_overlay.mp4"
-    return None
+    return packed.get("overlay_url")
+
+
+def _with_playable_overlay(packed: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not packed:
+        return packed
+    out = dict(packed)
+    job_id = str(out.get("id") or "")
+    url = _playable_overlay_url(job_id, out)
+    if url:
+        out["overlay_url"] = url
+    return out
+
+
+def _job_video_url(job_id: str, packed: dict[str, Any] | None = None) -> str | None:
+    return _playable_overlay_url(job_id, packed)
 
 
 def _job_source_video(job_id: str, video_url: str | None = None) -> Path | None:
@@ -388,7 +569,7 @@ def _job_source_video(job_id: str, video_url: str | None = None) -> Path | None:
     job = JOBS.get(job_id)
     if job and job.get("video_path") and Path(job["video_path"]).exists():
         return Path(job["video_path"])
-    hits = list(UPLOAD_DIR.glob(f"{job_id}.*"))
+    hits = sorted(UPLOAD_DIR.glob(f"{job_id}*"))
     if hits:
         return hits[0]
     if video_url:

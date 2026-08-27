@@ -128,8 +128,16 @@ def _module_trust(key: str, data: dict[str, Any] | None, ctx: dict[str, Any]) ->
     return {"score": round(score, 3), "level": _level(score), "reasons": reasons[:4]}
 
 
-def compute_trust(result: dict[str, Any]) -> dict[str, Any]:
-    """Attach module + overall trust to an analysis result dict."""
+def compute_trust(
+    result: dict[str, Any], *, usable_frac_override: float | None = None
+) -> dict[str, Any]:
+    """Attach module + overall trust to an analysis result dict.
+
+    ``usable_frac_override`` lets a caller supply the pose-coverage fraction
+    directly instead of deriving it from this result's frames. Multi-view
+    fusion uses it so the shared "sparse_pose" penalty reflects the combined
+    (occlusion-reduced) coverage across cameras, not one view in isolation.
+    """
     modules = result.get("modules") or {}
     s = result.get("rep_summary") or {}
     video = result.get("video") or {}
@@ -145,6 +153,8 @@ def compute_trust(result: dict[str, Any]) -> dict[str, Any]:
         valid = int(body.get("valid_frame_count") or 0)
         if valid + flagged > 0:
             usable = valid / (valid + flagged)
+    if usable_frac_override is not None:
+        usable = _clamp01(usable_frac_override)
 
     ctx = {
         "fps": video.get("fps") or 30.0,

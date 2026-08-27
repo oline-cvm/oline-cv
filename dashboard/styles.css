@@ -570,3 +570,103 @@ video {
   .workspace { grid-template-columns: 1fr; }
   .head-actions { max-width: 100%; justify-content: flex-start; }
 }
+
+/* --- Two-view fusion --- */
+.mv-note {
+  margin: 0.35rem 0 0.2rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+.mv-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 4px;
+}
+.mv-cov {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+.mv-cov strong {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-right: 0.2rem;
+}
+.mv-pill {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.mv-pill.good { border-color: var(--good); color: var(--good); }
+.mv-pill.up { border-color: var(--accent); color: var(--accent); }
+.view-toggle {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.vt-btn {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  padding: 0.28rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.vt-btn:hover { border-color: var(--accent); color: var(--text); }
+.vt-btn.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: #2a2b1d;
+}
+.mv-align {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 0.45rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 3px;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+.mv-align-warn {
+  border: 1px solid var(--warn);
+  background: rgba(196,122,74,0.08);
+  color: var(--warn);
+}
+.mv-align-note {
+  border: 1px solid var(--accent);
+  background: rgba(196,163,90,0.06);
+  color: var(--accent);
+}
+.mv-timing {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+.mv-cov-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}

@@ -1,6 +1,5 @@
 const $ = (id) => document.getElementById(id);
 
-let pickXY = null;
 let currentResult = null;
 let pinnedResult = null;
 
@@ -11,48 +10,6 @@ try {
 
 $("show-advanced").addEventListener("change", () => {
   $("snap-wrap").hidden = !$("show-advanced").checked;
-});
-
-$("file").addEventListener("change", () => {
-  const f = $("file").files?.[0];
-  if (!f) return;
-  $("file-label").textContent = f.name;
-  loadPickPreview(f);
-});
-
-function loadPickPreview(file) {
-  const url = URL.createObjectURL(file);
-  const v = $("pick-video");
-  v.src = url;
-  v.onloadeddata = () => {
-    v.currentTime = Math.min(0.2, (v.duration || 1) * 0.05);
-    $("pick-empty").classList.add("hide");
-    v.classList.add("on");
-    drawPickOverlay();
-    $("pick-hint").textContent = "Tap the offensive lineman to lock";
-  };
-}
-
-$("pick-stage").addEventListener("click", (e) => {
-  const v = $("pick-video");
-  if (!v.videoWidth) {
-    setStatus("Load a film first");
-    return;
-  }
-  const rect = v.getBoundingClientRect();
-  const { x, y } = mapClickToVideo(e.clientX, e.clientY, rect, v.videoWidth, v.videoHeight);
-  if (x == null) return;
-  pickXY = { x, y };
-  $("pick-coord").textContent = "player locked";
-  $("pick-hint").textContent = "Locked — hit Analyze rep";
-  drawPickOverlay();
-});
-
-$("clear-pick").addEventListener("click", () => {
-  pickXY = null;
-  $("pick-coord").textContent = "auto lock";
-  $("pick-hint").textContent = "Load film, then tap the OL";
-  drawPickOverlay();
 });
 
 function mapClickToVideo(cx, cy, rect, vw, vh) {
@@ -69,61 +26,176 @@ function mapClickToVideo(cx, cy, rect, vw, vh) {
   return { x: lx / dispW, y: ly / dispH };
 }
 
-function drawPickOverlay() {
-  const v = $("pick-video");
-  const c = $("pick-canvas");
-  if (!v.videoWidth) {
-    c.width = c.height = 0;
-    return;
+// One "lock the player" stage. Two instances (sideline + endzone) share this.
+function makePicker(ids, hintDefault) {
+  const els = {
+    stage: $(ids.stage),
+    video: $(ids.video),
+    canvas: $(ids.canvas),
+    empty: $(ids.empty),
+    hint: $(ids.hint),
+    coord: $(ids.coord),
+    clear: $(ids.clear),
+  };
+  let pick = null;
+
+  function draw() {
+    const v = els.video;
+    const c = els.canvas;
+    if (!v.videoWidth) {
+      c.width = c.height = 0;
+      return;
+    }
+    const rect = v.getBoundingClientRect();
+    c.width = Math.round(rect.width);
+    c.height = Math.round(rect.height);
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (!pick) return;
+    const scale = Math.min(c.width / v.videoWidth, c.height / v.videoHeight);
+    const dispW = v.videoWidth * scale;
+    const dispH = v.videoHeight * scale;
+    const offX = (c.width - dispW) / 2;
+    const offY = (c.height - dispH) / 2;
+    const px = offX + pick.x * dispW;
+    const py = offY + pick.y * dispH;
+    ctx.strokeStyle = "#c4a35a";
+    ctx.fillStyle = "rgba(196,163,90,0.35)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(px, py, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(px - 22, py);
+    ctx.lineTo(px + 22, py);
+    ctx.moveTo(px, py - 22);
+    ctx.lineTo(px, py + 22);
+    ctx.stroke();
   }
-  const rect = v.getBoundingClientRect();
-  c.width = Math.round(rect.width);
-  c.height = Math.round(rect.height);
-  const ctx = c.getContext("2d");
-  ctx.clearRect(0, 0, c.width, c.height);
-  if (!pickXY) return;
-  const scale = Math.min(c.width / v.videoWidth, c.height / v.videoHeight);
-  const dispW = v.videoWidth * scale;
-  const dispH = v.videoHeight * scale;
-  const offX = (c.width - dispW) / 2;
-  const offY = (c.height - dispH) / 2;
-  const px = offX + pickXY.x * dispW;
-  const py = offY + pickXY.y * dispH;
-  ctx.strokeStyle = "#c4a35a";
-  ctx.fillStyle = "rgba(196,163,90,0.35)";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(px, py, 14, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(px - 22, py);
-  ctx.lineTo(px + 22, py);
-  ctx.moveTo(px, py - 22);
-  ctx.lineTo(px, py + 22);
-  ctx.stroke();
+
+  function load(file) {
+    const url = URL.createObjectURL(file);
+    els.video.src = url;
+    els.video.onloadeddata = () => {
+      els.video.currentTime = Math.min(0.2, (els.video.duration || 1) * 0.05);
+      els.empty.classList.add("hide");
+      els.video.classList.add("on");
+      draw();
+      els.hint.textContent = "Tap the offensive lineman to lock";
+    };
+  }
+
+  els.stage.addEventListener("click", (e) => {
+    const v = els.video;
+    if (!v.videoWidth) {
+      setStatus("Load a film first");
+      return;
+    }
+    const rect = v.getBoundingClientRect();
+    const { x, y } = mapClickToVideo(e.clientX, e.clientY, rect, v.videoWidth, v.videoHeight);
+    if (x == null) return;
+    pick = { x, y };
+    els.coord.textContent = "player locked";
+    els.hint.textContent = "Locked — hit Analyze rep";
+    draw();
+  });
+
+  els.clear.addEventListener("click", () => {
+    pick = null;
+    els.coord.textContent = "auto lock";
+    els.hint.textContent = hintDefault;
+    draw();
+  });
+
+  return { load, draw, getPick: () => pick };
 }
 
-window.addEventListener("resize", drawPickOverlay);
+const sidelinePicker = makePicker(
+  {
+    stage: "pick-stage",
+    video: "pick-video",
+    canvas: "pick-canvas",
+    empty: "pick-empty",
+    hint: "pick-hint",
+    coord: "pick-coord",
+    clear: "clear-pick",
+  },
+  "Load film, then tap the OL"
+);
+
+const endzonePicker = makePicker(
+  {
+    stage: "pick-stage2",
+    video: "pick-video2",
+    canvas: "pick-canvas2",
+    empty: "pick-empty2",
+    hint: "pick-hint2",
+    coord: "pick-coord2",
+    clear: "clear-pick2",
+  },
+  "Load film, then tap the same OL"
+);
+
+$("file").addEventListener("change", () => {
+  const f = $("file").files?.[0];
+  if (!f) return;
+  $("file-label").textContent = f.name;
+  $("pick-box").hidden = false;
+  sidelinePicker.load(f);
+});
+
+$("file2").addEventListener("change", () => {
+  const f = $("file2").files?.[0];
+  if (!f) return;
+  $("file-label2").textContent = f.name;
+  $("pick-box2").hidden = false;
+  endzonePicker.load(f);
+});
+
+window.addEventListener("resize", () => {
+  sidelinePicker.draw();
+  endzonePicker.draw();
+});
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!$("file").files?.[0]) {
-    setStatus("Pick a video first");
+  const file1 = $("file").files?.[0];
+  const file2 = $("file2").files?.[0];
+  if (!file1 && !file2) {
+    setStatus("Add at least one film — sideline, endzone, or both");
     return;
   }
+
   const fd = new FormData();
-  fd.append("file", $("file").files[0]);
   fd.append("jersey", $("jersey").value || "");
   fd.append("play_type", $("play_type").value || "pass");
   const snap = $("snap").value;
   if ($("show-advanced").checked && snap !== "") fd.append("snap_frame", snap);
-  if (pickXY) {
-    fd.append("pick_x", String(pickXY.x));
-    fd.append("pick_y", String(pickXY.y));
+
+  if (file1) {
+    fd.append("file", file1);
+    fd.append("role", "sideline");
+    const pick1 = sidelinePicker.getPick();
+    if (pick1) {
+      fd.append("pick_x", String(pick1.x));
+      fd.append("pick_y", String(pick1.y));
+    }
   }
 
-  setBusy(true, "Uploading film…", 2, "ingest");
+  if (file2) {
+    fd.append("file2", file2);
+    fd.append("role2", "endzone");
+    fd.append("jersey2", $("jersey").value || "");
+    const pick2 = endzonePicker.getPick();
+    if (pick2) {
+      fd.append("pick_x2", String(pick2.x));
+      fd.append("pick_y2", String(pick2.y));
+    }
+  }
+
+  const twoView = !!file1 && !!file2;
+  setBusy(true, twoView ? "Uploading both angles…" : "Uploading film…", 2, "ingest");
   try {
     const res = await fetch("/api/analyze", { method: "POST", body: fd });
     const data = await res.json();
@@ -485,14 +557,109 @@ function render(r) {
   $("export-pdf").disabled = !(r.report_url || (r.id && r.id !== "demo"));
   $("on-field").disabled = !r.id;
 
-  if (r.overlay_url) {
-    $("preview").src = r.overlay_url;
-    $("preview").classList.add("on");
-    $("empty").classList.add("hide");
-    $("preview").load();
-  }
+  renderMultiview(r);
+
+  if (r.overlay_url) setPreview(r.overlay_url);
 
   renderCompare();
+}
+
+function setPreview(url) {
+  const preview = $("preview");
+  preview.onerror = () => {
+    $("empty").classList.remove("hide");
+    $("empty").textContent =
+      "Preview codec not supported — install imageio-ffmpeg and re-analyze (OpenCV mp4v won’t play in browsers).";
+    preview.classList.remove("on");
+    setStatus("Film encoded but not browser-playable. Re-run Analyze after installing imageio-ffmpeg.");
+  };
+  preview.onloadeddata = () => {
+    $("empty").textContent = "Film preview shows here";
+  };
+  preview.src = url;
+  preview.classList.add("on");
+  $("empty").classList.add("hide");
+  preview.load();
+}
+
+function fracPct(x) {
+  return `${Math.round((Number(x) || 0) * 100)}%`;
+}
+
+// Two-view fusion summary: alignment warnings, coverage recovery,
+// per-view snap timing, and a toggle to switch each camera's overlay.
+function renderMultiview(r) {
+  const bar = $("mv-bar");
+  const mv = r.multiview;
+  if (!mv || !mv.coverage) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+
+  let html = "";
+
+  // Alignment warnings (different plays / low snap confidence / fps mismatch)
+  const align = mv.alignment || {};
+  const warns = align.warnings || [];
+  if (warns.length) {
+    const level = align.same_play_confidence === "low" ? "warn" : "note";
+    html += `<div class="mv-align mv-align-${level}">`;
+    for (const w of warns) {
+      html += `<span class="mv-warn-line">${w}</span>`;
+    }
+    html += `</div>`;
+  }
+
+  // Per-view snap timing (shows how clips were aligned despite different starts)
+  const viewTimings = (mv.views || [])
+    .filter((v) => v.snap_at_s != null)
+    .map((v) => `${pretty(v.role)} snap at ${v.snap_at_s}s (rep ${v.rep_duration_s}s)`)
+    .join(" · ");
+  if (viewTimings) {
+    html += `<div class="mv-timing">${viewTimings}</div>`;
+  }
+
+  // Coverage stats
+  const cov = mv.coverage;
+  const gain = Math.max(0, (cov.combined_coverage || 0) - (cov.best_single_coverage || 0));
+  html +=
+    `<div class="mv-cov-row">` +
+    `<strong>Occlusion coverage</strong>` +
+    `<span class="mv-pill good">Both views: ${fracPct(cov.combined_coverage)}</span>` +
+    `<span class="mv-pill">Best single: ${fracPct(cov.best_single_coverage)}</span>` +
+    (gain > 0.001
+      ? `<span class="mv-pill up">+${fracPct(gain)} recovered</span>`
+      : `<span class="mv-pill">no extra gaps to fill</span>`) +
+    `</div>`;
+
+  $("mv-cov").innerHTML = html;
+
+  // View toggle buttons
+  const views = r.views || [];
+  const toggle = $("view-toggle");
+  const buttons = [];
+  if (r.overlay_url) {
+    buttons.push(
+      `<button type="button" class="vt-btn active" data-url="${r.overlay_url}">Fused view</button>`
+    );
+  }
+  for (const v of views) {
+    if (!v.overlay_url) continue;
+    buttons.push(
+      `<button type="button" class="vt-btn" data-url="${v.overlay_url}">${pretty(v.role)} · ${fracPct(
+        v.coverage
+      )}</button>`
+    );
+  }
+  toggle.innerHTML = buttons.join("");
+  toggle.querySelectorAll(".vt-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      toggle.querySelectorAll(".vt-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      setPreview(btn.getAttribute("data-url"));
+    });
+  });
 }
 
 function briefLine(r) {

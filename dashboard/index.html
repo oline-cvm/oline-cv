@@ -16,14 +16,16 @@
       <p class="rail-note">Sideline film → coach cues<br/>one player, one rep</p>
 
       <form id="form" class="form">
+        <p class="mv-note">Add a sideline angle, an endzone angle, or both. With both, we fuse the views to cover the lineman when he leaves one frame.</p>
+
         <label class="file">
           <input type="file" id="file" accept="video/*" hidden />
-          <span id="file-label">Choose film</span>
+          <span id="file-label">Add sideline film</span>
         </label>
 
-        <div class="pick-box" id="pick-box">
+        <div class="pick-box" id="pick-box" hidden>
           <div class="pick-head">
-            <span>Lock player</span>
+            <span>Lock player · Sideline</span>
             <button type="button" class="linkish" id="clear-pick">Clear</button>
           </div>
           <p class="pick-hint" id="pick-hint">Load film, then tap the OL</p>
@@ -33,6 +35,25 @@
             <div class="pick-empty" id="pick-empty">No film loaded</div>
           </div>
           <p class="pick-coord" id="pick-coord">auto lock</p>
+        </div>
+
+        <label class="file">
+          <input type="file" id="file2" accept="video/*" hidden />
+          <span id="file-label2">Add endzone film</span>
+        </label>
+
+        <div class="pick-box" id="pick-box2" hidden>
+          <div class="pick-head">
+            <span>Lock player · Endzone</span>
+            <button type="button" class="linkish" id="clear-pick2">Clear</button>
+          </div>
+          <p class="pick-hint" id="pick-hint2">Load film, then tap the same OL</p>
+          <div class="pick-stage" id="pick-stage2">
+            <video id="pick-video2" muted playsinline></video>
+            <canvas id="pick-canvas2"></canvas>
+            <div class="pick-empty" id="pick-empty2">No film loaded</div>
+          </div>
+          <p class="pick-coord" id="pick-coord2">auto lock</p>
         </div>
 
         <label>Jersey <span class="opt">optional</span>
@@ -107,6 +128,11 @@
           <button type="button" class="secondary small" id="on-field" disabled>3D replay (SMPL)</button>
         </div>
       </header>
+
+      <div class="mv-bar" id="mv-bar" hidden>
+        <div class="mv-cov" id="mv-cov"></div>
+        <div class="view-toggle" id="view-toggle"></div>
+      </div>
 
       <div class="workspace coach-workspace">
         <div class="viewer">
