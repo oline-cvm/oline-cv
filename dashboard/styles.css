@@ -415,6 +415,35 @@ video {
   font-size: 0.85rem;
 }
 
+.metric-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+.metric-grid .m-label,
+.metric-grid .m-value {
+  background: var(--panel-2);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+}
+.metric-grid .m-label { color: var(--muted); }
+.metric-grid .m-value {
+  font-family: var(--mono);
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+.metric-grid .m-value.warn { color: var(--warn); }
+.metric-grid .m-value.good { color: var(--good); }
+.metric-note {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
 .keyframe-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
