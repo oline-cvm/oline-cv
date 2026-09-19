@@ -126,6 +126,7 @@ def _pack_result(
         "posture_classification": s.get("posture_classification"),
         "posture_confidence": s.get("posture_confidence"),
         "mean_knee_flexion_deg": s.get("mean_knee_flexion_deg"),
+        "min_knee_flexion_deg": s.get("min_knee_flexion_deg"),
         "mean_torso_angle_deg": s.get("mean_torso_angle_deg"),
         "hip_height_at_lowest": s.get("hip_height_at_lowest"),
         "step_cadence_hz": s.get("step_cadence_hz"),

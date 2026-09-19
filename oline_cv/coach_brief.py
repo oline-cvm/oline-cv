@@ -55,18 +55,34 @@ def build_coach_brief(r: dict[str, Any]) -> dict[str, Any]:
         )
 
     posture = str(r.get("posture_classification") or "")
-    if "bender" in posture or "waist_bender" in flags:
+    knee_deg = r.get("mean_knee_flexion_deg")
+    knee_txt = f"{round(knee_deg)}°" if knee_deg is not None else "unclear"
+
+    # NOTE: match on exact posture value, not substring — "knee_bender" contains
+    # "bender" too, so a naive `"bender" in posture` check used to flag good
+    # knee-bend technique as a waist-bend fix.
+    if posture == "waist_bender" or "waist_bender" in flags:
         fix.append(
             {
                 "title": "Stay out of the waist bend",
-                "detail": "Leaning at the waist. Cue: bend at the knees/ankles, keep the chest over the toes.",
+                "detail": (
+                    f"Leaning at the waist — knee bend averaged {knee_txt}, too straight for a stable stance. "
+                    "Cue: bend at the knees/ankles, keep the chest over the toes."
+                ),
             }
         )
-    elif "balanced" in posture:
+    elif posture == "knee_bender" or "knee_bender" in flags:
+        keep.append(
+            {
+                "title": "Good knee bend",
+                "detail": f"Pad level came from bent knees, not the waist — knee bend averaged {knee_txt}. Keep that.",
+            }
+        )
+    elif posture == "balanced":
         keep.append(
             {
                 "title": "Balanced posture",
-                "detail": "Pad level and torso look controlled through the set.",
+                "detail": f"Pad level and torso look controlled through the set — knee bend averaged {knee_txt}.",
             }
         )
 

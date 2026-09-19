@@ -506,6 +506,59 @@ function renderInsightList(el, items, emptyText) {
     .join("");
 }
 
+function metricRows(r) {
+  const knee = r.mean_knee_flexion_deg;
+  const minKnee = r.min_knee_flexion_deg;
+  const torso = r.mean_torso_angle_deg;
+  const hip = r.hip_height_at_lowest;
+  const posture = r.posture_classification;
+  const pconf = r.posture_confidence;
+
+  const postureCls =
+    posture === "waist_bender" ? "warn" : posture === "knee_bender" || posture === "balanced" ? "good" : "";
+
+  return [
+    {
+      label: "Knee bend (avg)",
+      value: knee != null ? `${Math.round(knee)}°` : "—",
+      cls: postureCls,
+    },
+    {
+      label: "Knee bend (deepest)",
+      value: minKnee != null ? `${Math.round(minKnee)}°` : "—",
+    },
+    {
+      label: "Torso lean",
+      value: torso != null ? `${Math.round(torso)}°` : "—",
+      cls: torso != null && torso >= 22 ? "warn" : "",
+    },
+    {
+      label: "Pad level (hips)",
+      value: hip != null ? fracPct(hip) : "—",
+    },
+    {
+      label: "Posture",
+      value:
+        posture && posture !== "unknown"
+          ? `${pretty(posture)}${pconf != null ? ` (${fracPct(pconf)} conf)` : ""}`
+          : "Unclear",
+      cls: postureCls,
+    },
+  ];
+}
+
+function renderMetrics(r) {
+  const block = $("metrics-block");
+  const grid = $("metrics-grid");
+  const rows = metricRows(r);
+  const any = rows.some((row) => row.value !== "—");
+  block.hidden = !any;
+  if (!any) return;
+  grid.innerHTML = rows
+    .map((row) => `<div class="m-label">${row.label}</div><div class="m-value ${row.cls || ""}">${row.value}</div>`)
+    .join("");
+}
+
 function render(r) {
   currentResult = r;
   const brief = buildCoachBrief(r);
@@ -532,6 +585,7 @@ function render(r) {
 
   $("verdict-v").textContent = brief.verdict;
   $("verdict-s").textContent = brief.summary;
+  renderMetrics(r);
   renderInsightList($("fix-list"), brief.fix, "Nothing urgent — keep stacking good reps");
   renderInsightList($("keep-list"), brief.keep, "No clear wins tagged yet");
 
@@ -689,6 +743,8 @@ function renderCompare() {
     ["Verdict", (r) => buildCoachBrief(r).verdict],
     ["Top fix", (r) => buildCoachBrief(r).fix[0]?.title || "—"],
     ["Top strength", (r) => buildCoachBrief(r).keep[0]?.title || "—"],
+    ["Knee bend (avg)", (r) => (r.mean_knee_flexion_deg != null ? `${Math.round(r.mean_knee_flexion_deg)}°` : "—")],
+    ["Posture", (r) => pretty(r.posture_classification)],
     ["Get-off", (r) => {
       if (r.late_off_the_ball) return "Late";
       if (r.reaction_time_ms == null) return "—";
