@@ -161,6 +161,14 @@ class AnalysisConfig:
     motion3d_max_interp_gap: int = 8
     motion3d_save_full_frames: bool = True
 
+    # --- Optional statistical benchmark (off by default) ---
+    # When set, analyze_video() extracts numeric features from the finished
+    # result and appends result["benchmark_comparison"]. Never required to import.
+    benchmark_path: str | None = None
+    benchmark_position: str | None = None
+    benchmark_technique: str | None = None
+    benchmark_side: str | None = None
+
     # --- Output ---
     write_overlay_video: bool = True
     overlay_suffix: str = "_overlay.mp4"
