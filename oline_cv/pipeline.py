@@ -305,6 +305,19 @@ def analyze_video(
 
     if output_json is None:
         output_json = str(Path(video_path).with_suffix("")) + "_analysis.json"
+
+    if config.benchmark_path:
+        from oline_cv.benchmark.compare import attach_benchmark_comparison
+
+        attach_benchmark_comparison(
+            result,
+            config.benchmark_path,
+            position=config.benchmark_position,
+            technique=config.benchmark_technique,
+            side=config.benchmark_side,
+            source_analysis_path=output_json,
+        )
+
     Path(output_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
     result["output_json"] = output_json
 

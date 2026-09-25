@@ -53,6 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--movement-threshold", type=float, default=None)
     p.add_argument("--min-keypoint-confidence", type=float, default=None)
     p.add_argument("--brief", action="store_true")
+    p.add_argument(
+        "--benchmark",
+        type=str,
+        default=None,
+        help="Optional benchmark JSON; appends result['benchmark_comparison']",
+    )
+    p.add_argument("--position", type=str, default=None, help="OL position label for benchmark context")
+    p.add_argument("--technique", type=str, default=None, help="Technique label for benchmark context")
+    p.add_argument("--side", type=str, default=None, help="left / right / interior")
     return p
 
 
@@ -86,6 +95,11 @@ def main(argv: list[str] | None = None) -> int:
             print("--pick-xy must be x,y", file=sys.stderr)
             return 1
         cfg.athlete_pick_xy = (parts[0], parts[1])
+    if args.benchmark:
+        cfg.benchmark_path = args.benchmark
+        cfg.benchmark_position = args.position
+        cfg.benchmark_technique = args.technique
+        cfg.benchmark_side = args.side
 
     print(f"Analyzing {video} ...")
     result = analyze_video(

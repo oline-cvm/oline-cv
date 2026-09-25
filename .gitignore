@@ -14,3 +14,7 @@ outputs/
 
 .pytest_cache/
 .mypy_cache/
+
+# Generated benchmark / good-rep dumps (tests use tmp_path)
+/benchmarks/*.json
+/data/
