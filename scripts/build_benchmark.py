@@ -30,19 +30,27 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--inputs",
         nargs="+",
-        required=True,
+        default=None,
         help="Analysis JSON paths, globs, or directories",
+    )
+    p.add_argument(
+        "--manifest",
+        default=None,
+        help="Selection manifest from prepare_reference_benchmark.py "
+        "(supplies the analysis paths and the benchmark context)",
     )
     p.add_argument("--name", required=True, help="Benchmark name")
     p.add_argument("--output", required=True, help="Output benchmark JSON path")
-    p.add_argument("--position", default="unknown", choices=POSITIONS)
-    p.add_argument("--play-type", default="pass", choices=PLAY_TYPES)
-    p.add_argument("--technique", default="unknown", help="e.g. vertical_set, inside_zone")
-    p.add_argument("--side", default="unknown", choices=SIDES)
+    # Context defaults are resolved after parsing so a --manifest can supply
+    # them; an explicit flag always wins.
+    p.add_argument("--position", default=None, choices=POSITIONS)
+    p.add_argument("--play-type", default=None, choices=PLAY_TYPES)
+    p.add_argument("--technique", default=None, help="e.g. vertical_set, inside_zone")
+    p.add_argument("--side", default=None, choices=SIDES)
     p.add_argument(
         "--min-trust",
         type=float,
-        default=DEFAULT_MIN_TRUST_SCORE,
+        default=None,
         help=f"Skip reps with trust.overall.score below this (default {DEFAULT_MIN_TRUST_SCORE})",
     )
     return p
@@ -50,10 +58,40 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    paths = expand_input_paths(args.inputs)
+
+    if not args.inputs and not args.manifest:
+        print("Provide --inputs or --manifest.", file=sys.stderr)
+        return 1
+
+    context: dict = {}
+    paths: list[Path] = []
+    if args.manifest:
+        from oline_cv.reference.dataset import resolve_manifest_analyses
+
+        try:
+            paths, context = resolve_manifest_analyses(args.manifest)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Unusable manifest {args.manifest}: {exc}", file=sys.stderr)
+            return 1
+        if not paths:
+            print(f"Manifest {args.manifest} resolved to no analysis files.", file=sys.stderr)
+            return 1
+    if args.inputs:
+        paths.extend(expand_input_paths(args.inputs))
+
     if not paths:
         print("No input JSON files matched.", file=sys.stderr)
         return 1
+
+    # Explicit flags win; otherwise use the manifest's context, then the
+    # original defaults.
+    position = args.position or context.get("position") or "unknown"
+    play_type = args.play_type or context.get("play_type") or "pass"
+    technique = args.technique or context.get("technique") or "unknown"
+    side = args.side or context.get("side") or "unknown"
+    min_trust = args.min_trust
+    if min_trust is None:
+        min_trust = context.get("min_trust_score", DEFAULT_MIN_TRUST_SCORE)
 
     analyses: list[tuple[dict, str]] = []
     for path in paths:
@@ -69,11 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     benchmark = build_benchmark(
         analyses,
         name=args.name,
-        position=args.position,
-        play_type=args.play_type,
-        technique=args.technique,
-        side=args.side,
-        min_trust_score=args.min_trust,
+        position=position,
+        play_type=play_type,
+        technique=technique,
+        side=side,
+        min_trust_score=min_trust,
     )
     out = save_benchmark(args.output, benchmark)
     print(f"Wrote {out}")

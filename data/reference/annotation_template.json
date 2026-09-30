@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "rep_id": "rep_000",
+  "video_file": "rep_000.mp4",
+  "player": {
+    "level": "high_school",
+    "position": "unknown"
+  },
+  "play": {
+    "play_type": "unknown",
+    "technique": "unknown",
+    "side": "unknown"
+  },
+  "expert": {
+    "quality": "uncertain",
+    "notes": []
+  }
+}

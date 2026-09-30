@@ -17,4 +17,17 @@ outputs/
 
 # Generated benchmark / good-rep dumps (tests use tmp_path)
 /benchmarks/*.json
-/data/
+
+# Reference dataset: never commit film, expert annotations, or analyses.
+# The directory skeleton and the annotation template stay tracked so a fresh
+# clone can reproduce the layout without carrying any data.
+/data/**
+!/data/
+!/data/reference/
+!/data/reference/clips/
+!/data/reference/annotations/
+!/data/reference/analyses/
+!/data/reference/manifests/
+!/data/reference/**/.gitkeep
+!/data/reference/README.md
+!/data/reference/annotation_template.json
