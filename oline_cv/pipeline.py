@@ -318,6 +318,18 @@ def analyze_video(
             source_analysis_path=output_json,
         )
 
+    if config.attribute_model_path:
+        from oline_cv.benchmark.attributes import attach_attribute_scores
+        from oline_cv.benchmark.storage import load_json
+
+        try:
+            attach_attribute_scores(result, load_json(config.attribute_model_path))
+        except Exception as exc:
+            result["attribute_scores"] = {
+                "error": str(exc),
+                "attribute_model_path": config.attribute_model_path,
+            }
+
     Path(output_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
     result["output_json"] = output_json
 

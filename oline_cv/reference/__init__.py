@@ -11,7 +11,9 @@ only by ``rep_id``.
 
 from oline_cv.reference.schema import (
     ANNOTATION_SCHEMA_VERSION,
+    ATTRIBUTE_KEYS,
     QUALITY_VALUES,
+    annotation_attributes,
     annotation_context,
     annotation_quality,
     make_annotation,
@@ -20,7 +22,9 @@ from oline_cv.reference.schema import (
 
 __all__ = [
     "ANNOTATION_SCHEMA_VERSION",
+    "ATTRIBUTE_KEYS",
     "QUALITY_VALUES",
+    "annotation_attributes",
     "annotation_context",
     "annotation_quality",
     "make_annotation",

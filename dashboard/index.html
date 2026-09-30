@@ -6,54 +6,36 @@
   <title>OLINE</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <div class="shell">
     <aside class="rail">
-      <div class="logo">OLINE</div>
-      <p class="rail-note">Sideline film → coach cues<br/>one player, one rep</p>
+      <div>
+        <div class="logo">OLINE</div>
+        <p class="rail-note">Offensive line film grader</p>
+      </div>
 
       <form id="form" class="form">
-        <p class="mv-note">Add a sideline angle, an endzone angle, or both. With both, we fuse the views to cover the lineman when he leaves one frame.</p>
-
         <label class="file">
           <input type="file" id="file" accept="video/*" hidden />
-          <span id="file-label">Add sideline film</span>
+          <span class="file-icon" aria-hidden="true">+</span>
+          <span id="file-label">Upload clip</span>
         </label>
 
         <div class="pick-box" id="pick-box" hidden>
           <div class="pick-head">
-            <span>Lock player · Sideline</span>
+            <span>Lock player</span>
             <button type="button" class="linkish" id="clear-pick">Clear</button>
           </div>
-          <p class="pick-hint" id="pick-hint">Load film, then tap the OL</p>
+          <p class="pick-hint" id="pick-hint">Load film, then tap the tackle</p>
           <div class="pick-stage" id="pick-stage">
             <video id="pick-video" muted playsinline></video>
             <canvas id="pick-canvas"></canvas>
             <div class="pick-empty" id="pick-empty">No film loaded</div>
           </div>
           <p class="pick-coord" id="pick-coord">auto lock</p>
-        </div>
-
-        <label class="file">
-          <input type="file" id="file2" accept="video/*" hidden />
-          <span id="file-label2">Add endzone film</span>
-        </label>
-
-        <div class="pick-box" id="pick-box2" hidden>
-          <div class="pick-head">
-            <span>Lock player · Endzone</span>
-            <button type="button" class="linkish" id="clear-pick2">Clear</button>
-          </div>
-          <p class="pick-hint" id="pick-hint2">Load film, then tap the same OL</p>
-          <div class="pick-stage" id="pick-stage2">
-            <video id="pick-video2" muted playsinline></video>
-            <canvas id="pick-canvas2"></canvas>
-            <div class="pick-empty" id="pick-empty2">No film loaded</div>
-          </div>
-          <p class="pick-coord" id="pick-coord2">auto lock</p>
         </div>
 
         <label>Jersey <span class="opt">optional</span>
@@ -129,6 +111,24 @@
         </div>
       </header>
 
+      <section class="scorecard" id="scorecard">
+        <div class="scorecard-head">
+          <div>
+            <div class="eyebrow">Rep grade</div>
+            <h2 class="scorecard-title" id="scorecard-title">Upload a rep to grade stance, first step, feet, hands &amp; hips</h2>
+          </div>
+          <div class="scorecard-tally" id="scorecard-tally" hidden></div>
+        </div>
+        <div class="attr-grid" id="attr-grid">
+          <div class="attr-card placeholder"><span class="attr-name">Stance</span><span class="attr-badge">—</span></div>
+          <div class="attr-card placeholder"><span class="attr-name">First step</span><span class="attr-badge">—</span></div>
+          <div class="attr-card placeholder"><span class="attr-name">Feet</span><span class="attr-badge">—</span></div>
+          <div class="attr-card placeholder"><span class="attr-name">Hands</span><span class="attr-badge">—</span></div>
+          <div class="attr-card placeholder"><span class="attr-name">Hips</span><span class="attr-badge">—</span></div>
+        </div>
+        <p class="scorecard-foot" id="scorecard-foot"></p>
+      </section>
+
       <div class="mv-bar" id="mv-bar" hidden>
         <div class="mv-cov" id="mv-cov"></div>
         <div class="view-toggle" id="view-toggle"></div>
@@ -172,6 +172,17 @@
           </section>
         </aside>
       </div>
+
+      <section class="panel measures" id="measures" hidden>
+        <div class="panel-head">
+          <h2>Measurements vs the 12 reference reps</h2>
+          <div class="legend">
+            <span><i class="lg-band"></i>Middle 50% of reference reps</span>
+            <span><i class="lg-dot"></i>This rep</span>
+          </div>
+        </div>
+        <div class="measure-list" id="measure-list"></div>
+      </section>
 
       <section class="compare" id="compare">
         <div class="compare-head">

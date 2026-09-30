@@ -35,12 +35,21 @@ class AnalysisConfig:
     # --- Pose ---
     # Medium pose model: better ankles/wrists than nano for stadium film.
     pose_model: str = "yolov8m-pose.pt"
-    pose_imgsz: int = 1280
+    # Upper bound; capped at the video's own long side (see ``imgsz_for``).
+    # Sideline film stacks linemen in depth: at 1280 a 2.8k frame merges the
+    # interior line into one box, at 1920 each lineman gets his own.
+    pose_imgsz: int = 1920
+    # Person detector for tracking. The pose model misses small players on
+    # wide shots (it may see only the referees); a plain detector finds
+    # everyone, and pose then runs on an upscaled crop of the chosen player.
+    detect_model: str = "yolov8m.pt"
+    pose_crop_px: int = 640  # crop around a tracked player is resized to this
     min_keypoint_confidence: float = 0.35
     min_frame_keypoint_ratio: float = 0.40
     min_person_confidence: float = 0.25
     athlete_roi: tuple[float, float, float, float] = (0.10, 0.20, 0.90, 0.90)
     athlete_pick_xy: tuple[float, float] | None = None
+    athlete_pick_time_s: float | None = None  # video time the tap was made on
     # Optional jersey number — when set, lock prefers OCR match (e.g. #76).
     target_jersey: int | None = None
     # Crop pad around locked OL. Lower = fewer distractors in-frame.
@@ -70,6 +79,16 @@ class AnalysisConfig:
     track_calib_mode: bool = True
     track_debug_dir: str | None = None
     track_lost_buffer: int = 45
+    # Pick the locked player's path over the whole clip (offline) instead of
+    # deciding identity greedily frame by frame. False = legacy associator.
+    track_global_link: bool = True
+    track_interp_gap_s: float = 0.2
+    # Whole-clip link gates, in the locked player's box units (per second so
+    # 30 and 60 fps film behave alike). A pass-setting tackle stays within ~2
+    # stance-box heights of his spot; the leash keeps the path from walking
+    # onto a referee or a back running past. None disables the leash.
+    track_max_speed_diag_s: float = 3.0
+    track_leash_h: float | None = 2.0  # fill the box across occlusions up to this long
     track_reject_wrong_team: bool = True
     track_min_appearance: float | None = None
     track_min_jersey: float | None = None
@@ -168,11 +187,18 @@ class AnalysisConfig:
     benchmark_position: str | None = None
     benchmark_technique: str | None = None
     benchmark_side: str | None = None
+    # Optional five-attribute good/bad model (stance/first_step/feet/hands/hips).
+    attribute_model_path: str | None = None
 
     # --- Output ---
     write_overlay_video: bool = True
     overlay_suffix: str = "_overlay.mp4"
     extra: dict[str, Any] = field(default_factory=dict)
+
+    def imgsz_for(self, frame: Any) -> int:
+        """Pose input size for ``frame``: ``pose_imgsz`` but never upscaled."""
+        long_side = max(frame.shape[:2])
+        return max(32, min(self.pose_imgsz, -(-long_side // 32) * 32))
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

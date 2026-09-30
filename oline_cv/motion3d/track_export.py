@@ -201,6 +201,8 @@ def export_tracks(
     raw_boxes: list[list[float] | None] = []
     for p in ol_poses:
         bb = getattr(p, "bbox_xyxy", None)
+        if getattr(p, "interpolated", False):
+            bb = None  # fill_bbox_gaps re-derives these and labels them interpolated
         raw_boxes.append(None if bb is None else [float(v) for v in bb])
     boxes, sources = fill_bbox_gaps(raw_boxes, max_interp_gap=max_interp_gap)
 

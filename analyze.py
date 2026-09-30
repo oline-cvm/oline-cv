@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--position", type=str, default=None, help="OL position label for benchmark context")
     p.add_argument("--technique", type=str, default=None, help="Technique label for benchmark context")
     p.add_argument("--side", type=str, default=None, help="left / right / interior")
+    p.add_argument(
+        "--attribute-model",
+        type=str,
+        default=None,
+        help="Optional five-attribute good/bad model JSON",
+    )
     return p
 
 
@@ -100,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg.benchmark_position = args.position
         cfg.benchmark_technique = args.technique
         cfg.benchmark_side = args.side
+    if args.attribute_model:
+        cfg.attribute_model_path = args.attribute_model
 
     print(f"Analyzing {video} ...")
     result = analyze_video(

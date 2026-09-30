@@ -36,6 +36,10 @@ ANNOTATION_SCHEMA_VERSION = "1.0"
 # reference example. A future NFL player still has bad reps in high school.
 QUALITY_VALUES: tuple[str, ...] = ("good", "not_good", "uncertain")
 
+# Expert technique attributes (HS film labels). n/a = expert did not rate that column.
+ATTRIBUTE_KEYS: tuple[str, ...] = ("stance", "first_step", "feet", "hands", "hips")
+ATTRIBUTE_VALUES: tuple[str, ...] = ("good", "bad", "n/a")
+
 REQUIRED_TOP_LEVEL: tuple[str, ...] = ("schema_version", "rep_id", "video_file")
 
 # Common competition levels. Free-form is allowed; this is only a hint for the
@@ -142,6 +146,20 @@ def validate_annotation(
                 isinstance(n, str) for n in notes
             ):
                 errors.append("expert.notes must be a list of strings")
+        attrs = expert.get("attributes")
+        if attrs is not None:
+            if not isinstance(attrs, dict):
+                errors.append("expert.attributes must be an object")
+            else:
+                for key, val in attrs.items():
+                    if key not in ATTRIBUTE_KEYS:
+                        errors.append(f"unknown expert.attributes key {key!r}")
+                        continue
+                    if not _nonempty_str(val) or str(val).strip().lower() not in ATTRIBUTE_VALUES:
+                        errors.append(
+                            f"invalid expert.attributes.{key} {val!r} "
+                            f"(expected one of {list(ATTRIBUTE_VALUES)})"
+                        )
 
     return errors
 
@@ -157,6 +175,7 @@ def make_annotation(
     side: str | None = None,
     quality: str,
     notes: list[str] | None = None,
+    attributes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build an annotation dict. Unspecified football context stays "unknown".
 
@@ -186,8 +205,46 @@ def make_annotation(
         "expert": {
             "quality": quality_clean,
             "notes": list(notes or []),
+            "attributes": _normalize_attributes(attributes),
         },
     }
+
+
+def _normalize_attributes(attributes: dict[str, str] | None) -> dict[str, str]:
+    out = {key: "n/a" for key in ATTRIBUTE_KEYS}
+    if not attributes:
+        return out
+    for key in ATTRIBUTE_KEYS:
+        raw = attributes.get(key)
+        if not _nonempty_str(raw):
+            continue
+        val = str(raw).strip().lower().replace(" ", "_")
+        if val in ("na", "n.a.", "none", "unknown"):
+            val = "n/a"
+        if val not in ATTRIBUTE_VALUES:
+            raise ValueError(
+                f"attributes.{key} must be one of {list(ATTRIBUTE_VALUES)}, got {raw!r}"
+            )
+        out[key] = val
+    return out
+
+
+def annotation_attributes(annotation: dict[str, Any]) -> dict[str, str]:
+    """Structured 5-attribute labels. Falls back to note lines like 'stance: good'."""
+    expert = (annotation or {}).get("expert") or {}
+    raw = expert.get("attributes")
+    if isinstance(raw, dict) and raw:
+        return _normalize_attributes({k: str(v) for k, v in raw.items()})
+    parsed: dict[str, str] = {}
+    for note in expert.get("notes") or []:
+        if not isinstance(note, str) or ":" not in note:
+            continue
+        key, _, rest = note.partition(":")
+        key = key.strip().lower().replace(" ", "_")
+        if key not in ATTRIBUTE_KEYS:
+            continue
+        parsed[key] = rest.strip()
+    return _normalize_attributes(parsed)
 
 
 def annotation_quality(annotation: dict[str, Any]) -> str:
