@@ -68,6 +68,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional five-attribute good/bad model JSON",
     )
+    p.add_argument(
+        "--tracker",
+        choices=["deep-hm-sort", "legacy-botsort"],
+        default=None,
+        help="Tracking backend (default deep-hm-sort; legacy-botsort is deprecated)",
+    )
+    p.add_argument("--pick-t", type=float, default=None, help="Video time (s) of the --pick-xy tap")
+    p.add_argument("--reid-backend", choices=["auto", "osnet", "yolo_embed"], default=None)
+    p.add_argument("--reid-weights", type=str, default=None, help="Local OSNet ReID checkpoint")
+    p.add_argument(
+        "--debug-tracking",
+        action="store_true",
+        help="Write per-frame tracking JSONL and a debug video to outputs/track_debug",
+    )
     return p
 
 
@@ -108,6 +122,16 @@ def main(argv: list[str] | None = None) -> int:
         cfg.benchmark_side = args.side
     if args.attribute_model:
         cfg.attribute_model_path = args.attribute_model
+    if args.tracker:
+        cfg.tracker_backend = args.tracker.replace("-", "_")
+    if args.pick_t is not None:
+        cfg.athlete_pick_time_s = args.pick_t
+    if args.reid_backend:
+        cfg.deep_hm.reid_backend = args.reid_backend
+    if args.reid_weights:
+        cfg.deep_hm.reid_weights = args.reid_weights
+    if args.debug_tracking:
+        cfg.debug_tracking = True
 
     print(f"Analyzing {video} ...")
     result = analyze_video(

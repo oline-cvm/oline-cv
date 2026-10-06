@@ -31,12 +31,18 @@ def main() -> int:
     p.add_argument("x", type=float)
     p.add_argument("y", type=float)
     p.add_argument("--t", type=float, default=0.2)
+    p.add_argument("--tracker", choices=["deep_hm_sort", "legacy_botsort"], default="deep_hm_sort")
+    p.add_argument("--debug-tracking", action="store_true")
     a = p.parse_args()
 
-    cfg = AnalysisConfig(athlete_pick_xy=(a.x, a.y), athlete_pick_time_s=a.t)
+    cfg = AnalysisConfig(
+        athlete_pick_xy=(a.x, a.y), athlete_pick_time_s=a.t,
+        tracker_backend=a.tracker, debug_tracking=a.debug_tracking,
+    )
     tr = PoseTracker(cfg)
     fps, n, w, h, ol, _dl, frames = tr.extract_all(a.video)
-    print({k: tr.lock_meta.get(k) for k in ("tracker", "anchor_bbox", "global_link", "frames_lost")})
+    keys = ("tracker", "anchor_bbox", "global_link", "target", "reid", "frames_lost", "debug")
+    print({k: tr.lock_meta.get(k) for k in keys if k in tr.lock_meta})
 
     tiles = []
     for i in np.linspace(0, n - 1, 12).astype(int):

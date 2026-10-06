@@ -30,8 +30,93 @@ KEYPOINT_NAMES = (
 )
 
 
+TrackerBackend = Literal["deep_hm_sort", "legacy_botsort"]
+
+
+@dataclass
+class DeepHMSortConfig:
+    """Deep HM-SORT tracker plus the OLINE locked-target layer.
+
+    Tracker defaults follow Deep HM-SORT (Gran-Henriksen et al., 2024) /
+    Deep-EIoU (Huang et al., 2024). ``target_*`` fields belong to the OLINE
+    locked-target layer, which is not part of either paper.
+    """
+
+    # Detection confidence bands.
+    detector_threshold: float = 0.4  # detections below this are discarded
+    high_confidence_threshold: float = 0.6  # first-stage / new-track band
+    new_track_threshold: float = 0.6
+    # Association.
+    assignment_cost_threshold: float = 0.8  # Hungarian cutoff, first stage
+    appearance_cost_threshold: float = 0.3  # d_app above this counts as 1
+    proximity_threshold: float = 0.5  # d_iou above this disables appearance
+    low_assignment_cost_threshold: float = 0.5  # second (low-score) stage
+    unconfirmed_assignment_cost_threshold: float = 0.7
+    expansion_initial: float = 0.3
+    expansion_step: float = 0.3
+    expansion_iterations: int = 2
+    low_stage_expansion: float = 0.5
+    appearance_ema_alpha: float = 0.9
+    # Tracklets are kept for the whole video and never re-numbered.
+    keep_all_tracklets: bool = True
+    historical_after_s: float = 1.0  # LOST -> HISTORICAL label after this
+    max_lost_s: float | None = None  # only used when keep_all_tracklets=False
+    # OLINE addition to the generic tracker: do not refresh a tracklet's
+    # appearance from a box that overlaps another detection this much.
+    appearance_update_overlap_threshold: float = 0.2
+    # OLINE addition (after BoT-SORT GMC): move last boxes with camera pan/zoom.
+    camera_motion_compensation: bool = True
+
+    # ReID: "auto" uses OSNet when weights are configured, otherwise the
+    # generic detector-feature fallback (lower quality, flagged in lock meta).
+    reid_backend: Literal["auto", "osnet", "yolo_embed"] = "auto"
+    reid_weights: str | None = None  # or env OLINE_REID_WEIGHTS
+    reid_model_name: str = "osnet_x1_0"
+    reid_device: str | None = None  # None = cuda when available
+    reid_batch_size: int = 32
+    reid_min_crop_px: int = 12
+
+    # --- OLINE locked-target layer ---
+    target_reacquire_max_cost: float = 0.5
+    target_reacquire_min_margin: float = 0.1
+    target_reid_max_distance: float | None = None  # None = appearance_cost_threshold
+    # The harmonic mean lets one strong cue carry a weak one; reacquisition
+    # also needs real overlap with the (expanded) last box on its own.
+    target_reacquire_max_iou_distance: float = 0.7
+    # Tighten the reacquisition appearance gate to the q-quantile of distances
+    # to players seen alongside the target (known other people). Generic
+    # embeddings put teammates close; this keeps them out.
+    target_adaptive_appearance: bool = True
+    target_impostor_quantile: float = 0.05
+    target_impostor_min_samples: int = 20
+    target_reacquire_confirm_frames: int = 2
+    target_visible_min_margin: float = 0.03
+    target_identity_fail_frames: int = 3
+    target_occluded_max_s: float = 1.0  # OCCLUDED label, then LOST
+    target_expand_every_s: float = 0.2
+    target_max_expansion: float = 1.5
+    # A tracklet seen alongside the target is someone else; None = for the
+    # whole clip.
+    target_exclusion_s: float | None = None
+    locked_target_gallery_size: int = 16
+    target_gallery_min_interval_s: float = 0.2
+    target_update_min_score: float = 0.6
+    target_min_crop_height_px: float = 24.0
+    target_edge_margin_px: float = 2.0
+    target_bidirectional: bool = True
+
+
 @dataclass
 class AnalysisConfig:
+    # --- Tracking backend ---
+    # "deep_hm_sort" (default) or "legacy_botsort" (deprecated detector +
+    # BoT-SORT + whole-clip link path, kept for A/B comparison only).
+    tracker_backend: TrackerBackend = "deep_hm_sort"
+    deep_hm: DeepHMSortConfig = field(default_factory=DeepHMSortConfig)
+    # Writes <stem>_tracking.jsonl and <stem>_tracking_debug.mp4 to
+    # track_debug_dir (or the output dir). Also enabled by OLINE_TRACK_DEBUG=1.
+    debug_tracking: bool = False
+
     # --- Pose ---
     # Medium pose model: better ankles/wrists than nano for stadium film.
     pose_model: str = "yolov8m-pose.pt"

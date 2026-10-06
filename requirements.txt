@@ -12,3 +12,6 @@ imageio-ffmpeg>=0.5.1
 mediapipe>=0.10.21
 fpdf2>=2.7.0
 pytest>=8.0.0
+# Optional, for sports ReID in tracking (reid_backend="osnet"); needs a local
+# checkpoint via OLINE_REID_WEIGHTS — see docs/tracking.md.
+# torchreid>=0.2.5
