@@ -64,6 +64,8 @@ class DeepHMSortConfig:
     # OLINE addition to the generic tracker: do not refresh a tracklet's
     # appearance from a box that overlaps another detection this much.
     appearance_update_overlap_threshold: float = 0.2
+    # Also skip EMA updates below this detector score (generic MOT only).
+    appearance_update_min_score: float = 0.6
     # OLINE addition (after BoT-SORT GMC): move last boxes with camera pan/zoom.
     camera_motion_compensation: bool = True
 
@@ -104,6 +106,35 @@ class DeepHMSortConfig:
     target_min_crop_height_px: float = 24.0
     target_edge_margin_px: float = 2.0
     target_bidirectional: bool = True
+
+    # --- Occlusion risk (when ordinary association is unsafe) ---
+    target_occlusion_overlap_threshold: float = 0.25
+    target_ambiguity_margin: float = 0.05
+    target_jump_box_h: float = 0.55
+    # Weak YOLO boxes considered only while the locked target is
+    # occluded/lost/reacquiring. They never enter generic Deep HM-SORT.
+    target_recovery_detection_threshold: float = 0.15
+    target_max_expansion_lost: float = 4.0  # spatial search after prolonged loss
+    # SAM 2.1 target-only video segmentation (Apache-2.0). Not Deep HM-SORT.
+    enable_target_segmentation: bool = True
+    target_segmentation_backend: Literal["sam2", "none"] = "sam2"
+    sam2_checkpoint: str | None = None  # or env OLINE_SAM2_CHECKPOINT
+    sam2_model_cfg: str = "configs/sam2.1/sam2.1_hiera_t.yaml"
+    sam2_device: str | None = None  # None = cuda when available else cpu
+    mask_visible_min_score: float = 0.0  # SAM logit mean; 0 = any positive mask
+    mask_visible_min_area_frac: float = 0.0004  # of the frame
+    mask_candidate_min_coverage: float = 0.45  # fraction of mask pixels in the box
+    mask_candidate_min_iou: float = 0.2  # IoU(mask bbox, candidate)
+    mask_veto_max_coverage: float = 0.2  # bound tracklet below this is contradicted
+    max_occlusion_window_s: float = 4.0
+    require_sam_if_configured: bool = False  # True = error when SAM is requested but missing
+    # When the SAM/fake mask is visible and motion-consistent, emit that box
+    # even if YOLO dropped the player (SAMURAI / SAM 2 identity, not MOT).
+    mask_emit_without_detection: bool = True
+    sam2_propagate_full_video: bool = True
+    # Reject a mask/box that is farther from the Kalman-style prediction
+    # than this many last-box-heights * sqrt(frames unseen).
+    mask_motion_err_box_h: float = 0.6
 
 
 @dataclass

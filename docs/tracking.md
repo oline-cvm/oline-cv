@@ -1,6 +1,6 @@
 # Player tracking
 
-OLINE follows one tapped offensive lineman through a clip. Tracking has two
+OLINE follows one tapped offensive lineman through a clip. Tracking has three
 layers:
 
 1. **Deep HM-SORT** (`oline_cv/tracking/deep_hm_sort.py`) — a general
@@ -8,6 +8,10 @@ layers:
 2. **Locked-target identity** (`oline_cv/tracking/target_identity.py`) — an
    OLINE-specific layer that decides which tracklet, if any, is the tapped
    player in each frame.
+3. **SAM 2.1 target mask** (`oline_cv/tracking/target_mask.py`) — video object
+   segmentation of **only** the locked tackle (SAM 2 / SAMURAI). When the mask
+   is visible and motion-consistent it **is** the identity, including through
+   contact and detector dropout. Deep HM-SORT still tracks every player.
 
 Policy: **wrong-person tracking is worse than missing tracking.** When the
 target layer is unsure it outputs no box (`track_state = "LOST"`) instead of
@@ -165,6 +169,34 @@ only for A/B comparison). Environment override: `OLINE_TRACKER_BACKEND`.
 defaults: detector 0.4, high confidence 0.6, assignment cutoff 0.8,
 appearance cutoff 0.3, expansion 0.3 + 0.3 per iteration.
 
+## SAM 2.1 target segmentation
+
+Apache-2.0 (`facebookresearch/sam2`). One object only — the locked OL.
+
+The default path is `models/sam2/sam2.1_hiera_tiny.pt`. Download once:
+
+```
+python scripts/download_sam2_checkpoint.py
+```
+
+Or set `OLINE_SAM2_CHECKPOINT` / `DeepHMSortConfig.sam2_checkpoint`. Tiny
+(`configs/sam2.1/sam2.1_hiera_t.yaml`) is the default config. If SAM is
+enabled but the checkpoint/package is missing, analysis still runs and
+`ol_lock.tracking_quality.tracking_mode` is `"degraded"` with a loud warning.
+`--require-sam` makes that a hard error.
+
+On overlap the bound tackle keeps his box when motion (or the mask) says it
+is still the same person. A mask that teleports onto another player is
+rejected. Unknown for a few frames is still preferred over a wrong player.
+
+`ol_lock.tracking_quality` also records `reid_mode` (`sports_reid` vs
+`generic`). Generic `yolo_embed` is **not** sports ReID.
+
+While the locked target is occluded, YOLO boxes between
+`target_recovery_detection_threshold` (0.15) and `detector_threshold` (0.4)
+are identity candidates only. They cannot become the target without mask
+and/or appearance evidence.
+
 ## Debugging
 
 `--debug-tracking` (CLI), `debug_tracking=True`, or `OLINE_TRACK_DEBUG=1`
@@ -181,8 +213,13 @@ writes to `track_debug_dir` (default `outputs/track_debug/`):
 
 ```
 python scripts/evaluate_target_tracking.py uploads/clip.mp4 --pick-xy 0.43,0.72 --pick-t 0.2
-python scripts/evaluate_target_tracking.py uploads/clip.mp4 --gt gt.json --tracker both
+python scripts/evaluate_target_tracking.py uploads/clip.mp4 --gt gt.json --tracker all
 ```
+
+`--tracker` is evaluation-only: `legacy_botsort`, `deep_hm_sort` (no SAM),
+`robust_target` (Deep HM-SORT + identity + SAM). Annotation template:
+`docs/target_tracking_annotation_template.json`.
+
 
 Ground truth (frames not listed are ignored; `null` = target hidden):
 
@@ -204,9 +241,10 @@ truth: coverage, state counts, tracker-id changes and per-frame jumps.
 - With the generic `yolo_embed` backend, appearance barely separates
   teammates, so the target layer reacquires rarely and drops more frames
   during line play. A sports ReID checkpoint is the main lever for coverage.
-- While the target is visible the layer trusts the tracker's continuity; a
-  tracker identity swap between two look-alike players that stay in contact
-  is only caught if appearance diverges.
+- While the target is visible the layer trusts the tracker's continuity
+  unless the SAM mask contradicts that assignment.
+- SAM on CPU is slow; occlusion windows are propagated only when identity
+  is already uncertain.
 - Camera compensation follows the background; it does not predict player
   motion, so long occlusions rely on the growing expansion region.
 - CPU runtime is dominated by detection at `pose_imgsz` on every frame.

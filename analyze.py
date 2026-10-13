@@ -82,6 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write per-frame tracking JSONL and a debug video to outputs/track_debug",
     )
+    p.add_argument("--no-target-segmentation", action="store_true", help="Disable SAM 2.1 occlusion recovery")
+    p.add_argument("--sam2-checkpoint", type=str, default=None, help="Local SAM 2.1 .pt checkpoint")
+    p.add_argument("--require-sam", action="store_true", help="Fail if SAM 2.1 is requested but unavailable")
     return p
 
 
@@ -132,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
         cfg.deep_hm.reid_weights = args.reid_weights
     if args.debug_tracking:
         cfg.debug_tracking = True
+    if args.no_target_segmentation:
+        cfg.deep_hm.enable_target_segmentation = False
+    if args.sam2_checkpoint:
+        cfg.deep_hm.sam2_checkpoint = args.sam2_checkpoint
+    if args.require_sam:
+        cfg.deep_hm.require_sam_if_configured = True
 
     print(f"Analyzing {video} ...")
     result = analyze_video(

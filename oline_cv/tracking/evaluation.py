@@ -31,10 +31,30 @@ from oline_cv.tracking.expansion_iou import iou_matrix
 
 
 def load_ground_truth(path: str | Path) -> dict:
+    """Load either the boxes-map format or the per-frame occlusion annotation."""
     d = json.loads(Path(path).read_text(encoding="utf-8"))
+    boxes: dict[int, np.ndarray | None] = {}
     raw = (d.get("target") or {}).get("boxes") or {}
-    boxes = {int(k): (None if v is None else np.asarray(v, dtype=float)) for k, v in raw.items()}
-    return {**d, "boxes": boxes}
+    for k, v in raw.items():
+        boxes[int(k)] = None if v is None else np.asarray(v, dtype=float)
+    # Alternate: {"frames": {"41": {"visible": true, "bbox": [...]}, "42": {"visible": false}}}
+    for k, v in (d.get("frames") or {}).items():
+        if int(k) in boxes:
+            continue
+        if v is None or v is False:
+            boxes[int(k)] = None
+        elif isinstance(v, dict):
+            boxes[int(k)] = None if not v.get("visible", True) else (
+                np.asarray(v["bbox"], dtype=float) if v.get("bbox") is not None else None
+            )
+        else:
+            boxes[int(k)] = np.asarray(v, dtype=float)
+    tgt = d.get("target") or {}
+    pick_xy = d.get("pick_xy") or tgt.get("lock_point")
+    pick_t = d.get("pick_t")
+    if pick_t is None and tgt.get("lock_frame") is not None and d.get("fps"):
+        pick_t = float(tgt["lock_frame"]) / float(d["fps"])
+    return {**d, "boxes": boxes, "pick_xy": pick_xy, "pick_t": pick_t}
 
 
 def _runs(flags: list[bool]) -> list[tuple[int, int]]:
@@ -96,6 +116,9 @@ def target_metrics(
     def rate(x, d):
         return None if d == 0 else round(x / d, 4)
 
+    occ_with_return = [o for o in occlusions if any(gt[f] is not None for f in frames if f > o["end"])]
+    succ = [o for o in occ_with_return if o["reacquired"]]
+    delays = [o["reacquire_latency_frames"] for o in succ if o["reacquire_latency_frames"] is not None]
     return {
         "annotated_frames": n,
         "gt_visible_frames": len(visible),
@@ -103,11 +126,18 @@ def target_metrics(
         "correct_frames": correct,
         "wrong_person_frames": wrong,
         "missed_frames": missed,
+        "target_visible_but_untracked_frames": missed,
         "target_recall": rate(correct, len(visible)),
         "target_precision": rate(correct, len(boxed)),
         "wrong_person_rate": rate(wrong, len(boxed)),
+        "false_target_assignment_rate": rate(wrong, len(boxed)),
         "identity_switches": switches,
         "longest_wrong_run": max((b - a + 1 for a, b in wrong_runs), default=0),
+        "occlusion_events": len(occlusions),
+        "successful_reacquisitions": len(succ),
+        "failed_reacquisitions": len(occ_with_return) - len(succ),
+        "reacquisition_success_rate": rate(len(succ), len(occ_with_return)),
+        "mean_reacquisition_delay": None if not delays else round(sum(delays) / len(delays), 2),
         "occlusions": occlusions,
     }
 

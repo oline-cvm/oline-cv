@@ -22,11 +22,17 @@ from oline_cv.tracking.deep_hm_sort import (
     TrackletState,
 )
 from oline_cv.tracking.expansion_iou import expand_boxes, expansion_iou
+from oline_cv.tracking.occlusion_risk import TargetRisk, evaluate_risk
 from oline_cv.tracking.target_identity import (
     LockedTargetIdentity,
     TargetFrame,
     TargetState,
     run_target_identity,
+)
+from oline_cv.tracking.target_mask import (
+    FakeTargetMaskTracker,
+    MaskEvidence,
+    build_target_mask_tracker,
 )
 
 __all__ = [
@@ -43,4 +49,9 @@ __all__ = [
     "harmonic_mean_distance",
     "linear_assignment",
     "run_target_identity",
+    "TargetRisk",
+    "evaluate_risk",
+    "FakeTargetMaskTracker",
+    "MaskEvidence",
+    "build_target_mask_tracker",
 ]

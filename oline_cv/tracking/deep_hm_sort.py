@@ -118,9 +118,44 @@ class FrameResult:
     source_index: np.ndarray  # (N,) index into the detector's raw output
     observations: list[TrackObservation] = field(default_factory=list)
     camera: np.ndarray | None = None  # 2x3, previous frame -> this frame
+    # Weak detections kept only for locked-target recovery; not MOT tracks.
+    recovery: np.ndarray | None = None  # (N,) bool
 
     def __len__(self) -> int:
         return int(len(self.scores))
+
+    def is_recovery(self, i: int) -> bool:
+        return bool(self.recovery is not None and i < len(self.recovery) and self.recovery[i])
+
+    def append_recovery(self, boxes, scores, embeddings) -> None:
+        """Append low-score boxes as identity-recovery candidates only."""
+        b = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+        s = np.asarray(scores, dtype=np.float64).reshape(-1)
+        if len(s) == 0:
+            if self.recovery is None:
+                self.recovery = np.zeros(len(self.scores), dtype=bool)
+            return
+        e = np.asarray(embeddings, dtype=np.float64)
+        if e.size == 0:
+            e = np.full((len(s), self.embeddings.shape[1] if self.embeddings.size else 1), np.nan)
+        else:
+            e = normalize_rows(e.reshape(len(s), -1))
+        n0 = len(self.scores)
+        rec0 = self.recovery if self.recovery is not None else np.zeros(n0, dtype=bool)
+        self.boxes = np.vstack([self.boxes.reshape(n0, 4), b]) if n0 else b
+        self.scores = np.concatenate([self.scores, s])
+        dim = e.shape[1]
+        if n0 == 0:
+            self.embeddings = e
+        else:
+            if self.embeddings.shape[1] != dim:
+                pad = np.full((n0, dim), np.nan)
+                self.embeddings = pad
+            self.embeddings = np.vstack([self.embeddings, e])
+        self.track_ids = np.concatenate([self.track_ids, np.full(len(s), -1, dtype=int)])
+        self.confirmed = np.concatenate([self.confirmed, np.zeros(len(s), dtype=bool)])
+        self.source_index = np.concatenate([self.source_index, np.full(len(s), -1, dtype=int)])
+        self.recovery = np.concatenate([rec0, np.ones(len(s), dtype=bool)])
 
     def visible_track_ids(self) -> list[int]:
         return [int(t) for t, c in zip(self.track_ids, self.confirmed) if t >= 0 and c]
@@ -194,7 +229,9 @@ class DeepHMSort:
         t.last_frame = frame_idx
         t.hits += 1
         t.history.append((frame_idx, t.box.copy()))
-        upd = bool(update_feature and clear[d] and self._update_feature(t, emb[d]))
+        score_ok = float(scores[d]) >= getattr(self.cfg, "appearance_update_min_score", 0.6)
+        crop_ok = float(boxes[d][3] - boxes[d][1]) >= 12.0
+        upd = bool(update_feature and clear[d] and score_ok and crop_ok and self._update_feature(t, emb[d]))
         if was_dormant:
             t.state = TrackletState.REACTIVATED
             t.reactivations += 1
@@ -346,6 +383,7 @@ class DeepHMSort:
             embeddings=emb if emb.ndim == 2 else emb.reshape(n, -1),
             track_ids=track_ids, confirmed=confirmed, source_index=src,
             observations=observations, camera=None if camera is None else np.asarray(camera, float),
+            recovery=np.zeros(n, dtype=bool),
         )
 
     def visible(self) -> list[Tracklet]:

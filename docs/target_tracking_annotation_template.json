@@ -1,0 +1,17 @@
+{
+  "video": "uploads/clip.mp4",
+  "fps": 30,
+  "pick_xy": [0.43, 0.72],
+  "pick_t": 0.2,
+  "target": {
+    "lock_frame": 6,
+    "lock_point": [0.43, 0.72]
+  },
+  "frames": {
+    "6": {"visible": true, "bbox": [800, 730, 840, 840]},
+    "40": {"visible": true, "bbox": [790, 720, 835, 835]},
+    "104": {"visible": false},
+    "105": {"visible": false},
+    "120": {"visible": true, "bbox": [810, 740, 850, 850]}
+  }
+}

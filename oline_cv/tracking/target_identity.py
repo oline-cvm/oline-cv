@@ -51,6 +51,8 @@ from oline_cv.tracking.camera_motion import invert, warp_boxes
 from oline_cv.tracking.costs import cosine_distance_matrix, harmonic_mean_distance
 from oline_cv.tracking.deep_hm_sort import FrameResult
 from oline_cv.tracking.expansion_iou import expansion_iou, iou_matrix
+from oline_cv.tracking.occlusion_risk import evaluate_risk
+from oline_cv.tracking.target_mask import MaskEvidence, mask_box_iou, mask_coverage
 
 
 class TargetState(str, Enum):
@@ -63,6 +65,11 @@ class TargetState(str, Enum):
 
 
 BOXED_STATES = (TargetState.VISIBLE_CONFIDENT, TargetState.REACQUIRED)
+
+
+def _box_center(box) -> np.ndarray:
+    b = np.asarray(box, dtype=float).reshape(4)
+    return np.array([(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5], dtype=float)
 
 
 @dataclass
@@ -83,6 +90,13 @@ class TargetFrame:
     update_skip: str | None = None
     reason: str = ""
     candidates: list[dict] = field(default_factory=list)
+    risk: str | None = None
+    sam_active: bool = False
+    sam_mask_available: bool = False
+    sam_mask_confidence: float | None = None
+    sam_mask_area: int | None = None
+    mask_coverage: float | None = None
+    recovery: bool = False
 
     @property
     def has_box(self) -> bool:
@@ -109,6 +123,13 @@ class TargetFrame:
             "update_skip": self.update_skip,
             "reason": self.reason,
             "candidates": self.candidates,
+            "risk": self.risk,
+            "sam_active": self.sam_active,
+            "sam_mask_available": self.sam_mask_available,
+            "sam_mask_confidence": f(self.sam_mask_confidence),
+            "sam_mask_area": self.sam_mask_area,
+            "mask_coverage": f(self.mask_coverage),
+            "recovery": self.recovery,
         }
 
 
@@ -144,6 +165,9 @@ class LockedTargetIdentity:
         self.reacquisitions = 0
         self.rejected_candidates = 0
         self.gallery_skips: dict[str, int] = {}
+        # Constant-velocity prior (SAMURAI-style). Image pixels / frame.
+        self._vel = np.zeros(2, dtype=float)
+        self._prev_c: np.ndarray | None = None
 
     # -- gallery ---------------------------------------------------------------
     def gallery_matrix(self) -> np.ndarray | None:
@@ -200,6 +224,8 @@ class LockedTargetIdentity:
             self.anchor = e.astype(np.float64) / max(np.linalg.norm(e), 1e-12)
         self.last_box = b
         self.last_seen = fr.frame_idx
+        self._vel = np.zeros(2, dtype=float)
+        self._prev_c = _box_center(b)
         tid = int(fr.track_ids[det_index])
         self.bound_tid = tid if tid >= 0 else None
         self.state = TargetState.VISIBLE_CONFIDENT
@@ -237,13 +263,52 @@ class LockedTargetIdentity:
             return self.reid_max
         return float(min(self.reid_max, np.quantile(np.asarray(self.impostors), c.target_impostor_quantile)))
 
-    def expansion_for(self, k: int) -> float:
+    def expansion_for(self, k: int, mask_visible: bool = False) -> float:
         c = self.cfg
         steps = max(0, (k - 1) // self._expand_every)
-        return float(min(c.target_max_expansion, c.expansion_initial + c.expansion_step * steps))
+        cap = c.target_max_expansion_lost if (k > self._occl_frames or mask_visible) else c.target_max_expansion
+        return float(min(cap, c.expansion_initial + c.expansion_step * steps))
 
     def _unseen_state(self, k: int) -> TargetState:
         return TargetState.OCCLUDED if k <= self._occl_frames else TargetState.LOST
+
+    def _update_motion(self, box, frame_idx: int) -> None:
+        c = _box_center(box)
+        if self._prev_c is not None and self.last_seen is not None:
+            dt = max(1, abs(int(frame_idx) - int(self.last_seen)))
+            inst = (c - self._prev_c) / dt
+            self._vel = 0.6 * self._vel + 0.4 * inst
+        self._prev_c = c
+
+    def _motion_ok(self, box, k: int) -> bool:
+        """SAMURAI-style: stay near the predicted location, or overlap last box."""
+        if self.last_box is None or box is None:
+            return False
+        h = max(1.0, float(self.last_box[3] - self.last_box[1]))
+        pred = _box_center(self.last_box) + self._vel * max(1, k)
+        err = float(np.hypot(*(_box_center(box) - pred))) / h
+        iou = float(iou_matrix(
+            np.asarray(box, float).reshape(1, 4), self.last_box.reshape(1, 4),
+        )[0, 0])
+        grow = float(getattr(self.cfg, "mask_motion_err_box_h", 0.6)) * max(1.0, float(k) ** 0.5)
+        lim = min(1.15, grow)
+        return iou >= 0.12 or err < lim
+
+    def _commit_mask_box(self, f: int, ev: MaskEvidence, k: int, E: float, reason: str) -> TargetFrame:
+        box = np.asarray(ev.bbox, dtype=float).reshape(4).copy()
+        self._update_motion(box, f)
+        self.last_box = box
+        self.last_seen = f
+        self.fail_count = 0
+        self.pending = None
+        self.state = TargetState.VISIBLE_CONFIDENT
+        return self._decorate(
+            TargetFrame(
+                f, self.state, bbox=box, track_id=self.bound_tid,
+                frames_since_seen=0, expansion=E, reason=reason,
+            ),
+            ev, risk="confident",
+        )
 
     def _costs(self, fr: FrameResult, expansion: float):
         d_iou = 1.0 - expansion_iou(self.last_box[None], fr.boxes, expansion, self.image_wh)[0]
@@ -256,36 +321,76 @@ class LockedTargetIdentity:
         cost = np.where(excluded, 1.0, cost)
         return cost, d_iou, d_app, excluded
 
-    def step(self, fr: FrameResult, motion: np.ndarray | None = None) -> TargetFrame:
+    def _decorate(self, out: TargetFrame, ev: MaskEvidence | None, coverage=None, risk=None) -> TargetFrame:
+        if ev is not None:
+            out.sam_active = ev.backend not in ("none",)
+            out.sam_mask_available = ev.mask is not None
+            out.sam_mask_confidence = ev.score
+            out.sam_mask_area = ev.area
+        if coverage is not None:
+            out.mask_coverage = float(coverage)
+        if risk is not None:
+            out.risk = risk if isinstance(risk, str) else risk.value
+        return out
+
+    def step(self, fr: FrameResult, motion: np.ndarray | None = None, mask: MaskEvidence | None = None) -> TargetFrame:
         """Decide the target in ``fr``. ``motion`` (2x3) maps the previously
         stepped frame's coordinates into this frame's (camera compensation)."""
         c = self.cfg
         f = fr.frame_idx
-        if motion is not None:
+        ev = mask
+        mask_vis = bool(ev is not None and ev.visible and ev.mask is not None)
+        if motion is not None and self.last_box is not None:
             self.last_box = warp_boxes(self.last_box[None], motion)[0]
+            if self._prev_c is not None:
+                stub = np.array([self._prev_c[0], self._prev_c[1], self._prev_c[0] + 1, self._prev_c[1] + 1], float)
+                w = warp_boxes(stub[None], motion)[0]
+                self._prev_c = np.array([w[0], w[1]], dtype=float)
             if self.pending is not None:
                 self.pending["box"] = warp_boxes(self.pending["box"][None], motion)[0]
-        k = abs(f - self.last_seen)
-        E = self.expansion_for(k)
+        k = abs(f - self.last_seen) if self.last_seen is not None else f
+        E = self.expansion_for(k, mask_vis)
         if len(fr) == 0:
             self.pending = None
+            if (mask_vis and ev is not None and ev.bbox is not None
+                    and getattr(c, "mask_emit_without_detection", True)
+                    and self._motion_ok(ev.bbox, max(1, k))):
+                return self._commit_mask_box(f, ev, k, E, "mask_holds_through_dropout")
             self.state = self._unseen_state(k)
-            return TargetFrame(f, self.state, frames_since_seen=k, expansion=E, reason="no_detections")
+            reason = "sam_propagating" if mask_vis else "target_detector_dropout"
+            return self._decorate(
+                TargetFrame(f, self.state, frames_since_seen=k, expansion=E, reason=reason),
+                ev, risk="full_occlusion" if k <= self._occl_frames else "lost",
+            )
 
         cost, d_iou, d_app, excluded = self._costs(fr, E)
+        cov = np.zeros(len(fr))
+        miou = np.zeros(len(fr))
+        if mask_vis:
+            cov = np.array([mask_coverage(ev.mask, b) for b in fr.boxes])
+            miou = np.array([mask_box_iou(ev.mask, b) for b in fr.boxes])
+            # Mask identity can reopen the spatial gate (SAM-Deep-EIoU).
+            reopen = (cov >= c.mask_candidate_min_coverage) | (miou >= c.mask_candidate_min_iou)
+            cost = np.where(reopen, harmonic_mean_distance(d_iou, np.clip(d_app, 0, 1)), cost)
         order = np.argsort(cost, kind="stable")
         cands = [
             {"det": int(i), "track_id": int(fr.track_ids[i]), "cost": round(float(cost[i]), 4),
              "d_iou": round(float(d_iou[i]), 4), "d_app": round(float(d_app[i]), 4),
-             "excluded": bool(excluded[i])}
-            for i in order[:3]
+             "excluded": bool(excluded[i]), "mask_coverage": round(float(cov[i]), 4),
+             "mask_iou": round(float(miou[i]), 4), "recovery": bool(fr.is_recovery(i)),
+             "score": round(float(fr.scores[i]), 3)}
+            for i in order[:5]
         ]
 
         def margin_for(i: int) -> float:
             others = np.delete(cost, i)
             return float((others.min() if len(others) else 1.0) - cost[i])
 
+        def cover(i):
+            return float(cov[i]) if i is not None else None
+
         def frame(state, i=None, reason="", **kw):
+            rec = bool(i is not None and fr.is_recovery(i))
             return TargetFrame(
                 frame_idx=f, state=state, det_index=None if i is None else int(i),
                 bbox=None if i is None or state not in BOXED_STATES else fr.boxes[i].copy(),
@@ -294,13 +399,24 @@ class LockedTargetIdentity:
                 cost=None if i is None else float(cost[i]),
                 d_iou=None if i is None else float(d_iou[i]),
                 d_app=None if i is None else float(d_app[i]),
-                frames_since_seen=k, expansion=E, reason=reason, candidates=cands, **kw,
+                frames_since_seen=k, expansion=E, reason=reason, candidates=cands,
+                recovery=rec, mask_coverage=cover(i), **kw,
             )
+
+        def finish(out, i=None, risk=None):
+            rsk = risk
+            if rsk is None and i is not None:
+                rsk, _ = evaluate_risk(
+                    fr, det_index=i, bound_present=bound is not None, margin=out.margin,
+                    d_app=out.d_app, reid_max=self.reid_max, last_box=self.last_box, cfg=c, unseen=k,
+                )
+            return self._decorate(out, ev, cover(i), rsk)
 
         def accept(i, state, reason):
             m = margin_for(i)
             tid = int(fr.track_ids[i])
             self.bound_tid = tid if tid >= 0 else None
+            self._update_motion(fr.boxes[i], f)
             self.last_box = fr.boxes[i].copy()
             self.last_seen = f
             self.fail_count = 0
@@ -314,7 +430,7 @@ class LockedTargetIdentity:
             out = frame(state, i, reason, appearance_updated=upd, update_skip=skip)
             out.margin = m
             out.frames_since_seen = 0
-            return out
+            return finish(out, i, "confident")
 
         bound = None
         if self.bound_tid is not None:
@@ -324,91 +440,149 @@ class LockedTargetIdentity:
         visible_chain = self.state in (
             TargetState.VISIBLE_CONFIDENT, TargetState.REACQUIRED, TargetState.VISIBLE_AMBIGUOUS
         )
+
+        def mask_supports(i: int) -> bool:
+            return mask_vis and (cov[i] >= c.mask_candidate_min_coverage or miou[i] >= c.mask_candidate_min_iou)
+
+        def mask_contradicts(i: int) -> bool:
+            if not mask_vis:
+                return False
+            other = [j for j in range(len(fr)) if j != i and mask_supports(j)]
+            return cov[i] <= c.mask_veto_max_coverage and len(other) > 0
+
         if bound is not None and visible_chain:
-            # Visible-target protection: follow the bound tracklet; a nearby
-            # box can only make the frame ambiguous, never take the target.
             m = margin_for(bound)
+            if mask_contradicts(bound):
+                self.state = TargetState.VISIBLE_AMBIGUOUS
+                out = frame(self.state, bound, "deep_hm_assignment_rejected_by_mask")
+                out.margin = m
+                return finish(out, bound, "ambiguous")
             app_ok = not np.all(np.isfinite(fr.embeddings[bound])) or d_app[bound] <= self.reid_max
             ok = d_iou[bound] < 1.0 - 1e-9 and app_ok and cost[bound] <= c.assignment_cost_threshold
+            from oline_cv.tracking.occlusion_risk import overlap_with_others
+            ov = overlap_with_others(fr.boxes, bound)
+            if ok and ov >= c.target_occlusion_overlap_threshold:
+                holds = mask_supports(bound) or (
+                    (not mask_vis) and self._motion_ok(fr.boxes[bound], 1)
+                )
+                self.gallery_skips["overlap"] = self.gallery_skips.get("overlap", 0) + 1
+                if holds:
+                    return accept(bound, TargetState.VISIBLE_CONFIDENT, "overlap_identity_holds")
+                self.state = TargetState.VISIBLE_AMBIGUOUS
+                out = frame(self.state, bound, "target_overlap_detected")
+                out.margin = m
+                out.update_skip = "overlap"
+                return finish(out, bound, "partial_occlusion")
             if ok and m >= c.target_visible_min_margin:
-                return accept(bound, TargetState.VISIBLE_CONFIDENT, "bound_track")
+                return accept(bound, TargetState.VISIBLE_CONFIDENT, "deep_hm_confident")
             if ok:
                 self.state = TargetState.VISIBLE_AMBIGUOUS
                 out = frame(self.state, bound, "close_competitor")
                 out.margin = m
-                return out
+                return finish(out, bound, "ambiguous")
             self.fail_count += 1
             if self.fail_count < c.target_identity_fail_frames:
                 self.state = TargetState.VISIBLE_AMBIGUOUS
                 out = frame(self.state, bound, "identity_check_failed")
                 out.margin = m
-                return out
-            # Bound tracklet no longer looks like the target: drop it.
+                return finish(out, bound, "ambiguous")
             self.excluded[self.bound_tid] = f
             self.bound_tid = None
             self.fail_count = 0
             self.state = self._unseen_state(k)
-            return frame(self.state, None, "unbound_identity_failed")
+            return finish(frame(self.state, None, "unbound_identity_failed"), None, "lost")
 
-        # Visible last frame but no bound tracklet in this one (the detection
-        # has no tracker id yet): continue only on tight frame-to-frame
-        # overlap with a clear margin, as the tracker's IoU stage would.
         best = int(order[0])
         if visible_chain and k == 1 and bound is None:
             mb = margin_for(best)
             if (d_iou[best] <= c.low_assignment_cost_threshold and not excluded[best]
-                    and d_app[best] <= self.reid_max and mb >= c.target_reacquire_min_margin):
+                    and d_app[best] <= self.reid_max and mb >= c.target_reacquire_min_margin
+                    and not fr.is_recovery(best)):
                 return accept(best, TargetState.VISIBLE_CONFIDENT, "continuity")
 
-        # Not visible: conservative reacquisition.
         app_thr = self.reacquire_appearance_threshold()
         for tf_c in cands:
             tf_c["app_thr"] = round(app_thr, 4)
 
-        def passes(i: int, mi: float, thr: float) -> bool:
-            return bool(
-                cost[i] < 1.0
-                and cost[i] <= c.target_reacquire_max_cost
-                and d_iou[i] <= c.target_reacquire_max_iou_distance
-                and d_app[i] <= thr
-                and mi >= c.target_reacquire_min_margin
-            )
+        def passes(i: int, mi: float, thr: float) -> tuple[bool, str]:
+            weak = fr.is_recovery(i)
+            if excluded[i]:
+                return False, "excluded_covisible"
+            if weak and not mask_supports(i):
+                return False, "low_confidence_without_identity"
+            if mask_vis and not mask_supports(i) and d_app[i] > thr:
+                return False, "candidate_failed_mask_gate"
+            if (not mask_supports(i)) and d_iou[i] > c.target_reacquire_max_iou_distance:
+                return False, "spatial_gate"
+            if d_app[i] > thr and not mask_supports(i):
+                return False, "candidate_failed_reid"
+            if mask_supports(i) and d_app[i] > self.reid_max and d_app[i] > 0.55:
+                return False, "candidate_failed_reid"  # ReID strongly contradicts mask
+            if cost[i] > c.target_reacquire_max_cost and not mask_supports(i):
+                return False, "no_valid_reacquisition"
+            if mi < c.target_reacquire_min_margin:
+                return False, "candidate_margin_too_small"
+            return True, ("reacquired_via_mask_and_reid" if mask_supports(i) else "reacquired_via_reid")
 
         m = margin_for(best)
-        # The target's own tracklet re-found after a short occlusion carries
-        # the tracker's association as independent evidence: static gate.
         own_thr = self.reid_max if k <= self._occl_frames else app_thr
-        if bound is not None and passes(bound, margin_for(bound), own_thr):
-            self.reacquisitions += 1
-            return accept(bound, TargetState.REACQUIRED, "own_tracklet_refound")
-        qualifies = passes(best, m, app_thr)
+        if bound is not None:
+            ok_b, why_b = passes(bound, margin_for(bound), own_thr)
+            if ok_b:
+                self.reacquisitions += 1
+                return accept(bound, TargetState.REACQUIRED, why_b if mask_supports(bound) else "own_tracklet_refound")
+
+        # Prefer the detection the mask sits on when it qualifies.
+        pick = best
+        if mask_vis:
+            ranked = [int(i) for i in np.argsort(-cov, kind="stable")]
+            for i in ranked:
+                ok_i, _ = passes(i, margin_for(i), app_thr)
+                if ok_i and mask_supports(i):
+                    pick = i
+                    m = margin_for(i)
+                    break
+        qualifies, why = passes(pick, m, app_thr)
         if not qualifies:
-            if cost[best] < 1.0:
+            if (mask_vis and ev is not None and ev.bbox is not None
+                    and getattr(c, "mask_emit_without_detection", True)
+                    and self._motion_ok(ev.bbox, max(1, k))):
+                snap = None
+                for i in (int(j) for j in np.argsort(-cov, kind="stable")):
+                    if mask_supports(i) and self._motion_ok(fr.boxes[i], max(1, k)):
+                        snap = i
+                        break
+                if snap is not None:
+                    self.reacquisitions += 1
+                    return accept(snap, TargetState.REACQUIRED, "reacquired_via_mask")
+                return self._commit_mask_box(f, ev, k, E, "mask_identity")
+            if cost[pick] < 1.0:
                 self.rejected_candidates += 1
             self.pending = None
             self.state = self._unseen_state(k)
-            out = frame(self.state, None, "no_qualified_candidate")
+            out = frame(self.state, None, why if why else "no_valid_reacquisition")
             out.margin = m
-            return out
+            return finish(out, None, "full_occlusion" if k <= self._occl_frames else "lost")
 
-        tid = int(fr.track_ids[best])
+        tid = int(fr.track_ids[pick])
         p = self.pending
         same = (
             p is not None
             and abs(f - p["frame"]) == 1
             and ((tid >= 0 and p["track_id"] == tid)
                  or (tid < 0 and p["track_id"] < 0
-                     and iou_matrix(p["box"][None], fr.boxes[best][None])[0, 0] > 0.3))
+                     and iou_matrix(p["box"][None], fr.boxes[pick][None])[0, 0] > 0.3)
+                 or (mask_supports(pick) and p.get("det") == pick))
         )
         count = p["count"] + 1 if same else 1
-        self.pending = {"track_id": tid, "box": fr.boxes[best].copy(), "frame": f, "count": count}
+        self.pending = {"track_id": tid, "box": fr.boxes[pick].copy(), "frame": f, "count": count, "det": pick}
         if count >= c.target_reacquire_confirm_frames:
             self.reacquisitions += 1
-            return accept(best, TargetState.REACQUIRED, f"confirmed_{count}_frames")
+            return accept(pick, TargetState.REACQUIRED, why)
         self.state = TargetState.REACQUISITION_CANDIDATE
-        out = frame(self.state, best, f"candidate_{count}")
+        out = frame(self.state, pick, f"candidate_{count}")
         out.margin = m
-        return out
+        return finish(out, pick, "ambiguous")
 
     def summary(self) -> dict:
         return {
@@ -423,6 +597,12 @@ class LockedTargetIdentity:
         }
 
 
+def _needs_mask(tf: TargetFrame | None) -> bool:
+    if tf is None:
+        return True
+    return tf.state not in (TargetState.VISIBLE_CONFIDENT,)
+
+
 def run_target_identity(
     frames: list[FrameResult],
     lock_pos: int,
@@ -431,24 +611,67 @@ def run_target_identity(
     fps: float,
     image_wh: tuple[int, int] | None,
     bidirectional: bool = True,
+    mask_tracker=None,
 ) -> tuple[list[TargetFrame | None], dict]:
     """Run the target layer forward (and backward) from the lock frame.
 
     ``frames`` is the tracker output in frame order; ``lock_pos`` indexes it.
     Frames before the lock are only resolved when ``bidirectional``.
+    When ``mask_tracker`` is provided it is seeded at the lock. By default the
+    mask is propagated through the whole clip (SAM 2 / SAMURAI), then used as
+    identity when Deep HM-SORT association is unsafe.
     """
     out: list[TargetFrame | None] = [None] * len(frames)
+    window = max(1, int(round(getattr(cfg, "max_occlusion_window_s", 4.0) * max(fps, 1.0))))
     fwd = LockedTargetIdentity(cfg, fps, image_wh)
+    lock_ev = None
+    if mask_tracker is not None:
+        if getattr(cfg, "sam2_propagate_full_video", True) and hasattr(mask_tracker, "propagate_all"):
+            mask_tracker.propagate_all(lock_pos, len(frames))
+        lock_ev = mask_tracker.get(lock_pos)
     out[lock_pos] = fwd.initialize(frames[lock_pos], lock_det)
+    if lock_ev is not None:
+        fwd._decorate(out[lock_pos], lock_ev, risk="confident")
+        out[lock_pos].reason = "lock"
+    sam_used = 0
+    prefilled = bool(
+        mask_tracker is not None and getattr(cfg, "sam2_propagate_full_video", True)
+    )
+
+    def mask_for(t: int, prev: TargetFrame | None, reverse: bool):
+        nonlocal sam_used
+        if mask_tracker is None:
+            return None
+        if prefilled:
+            return mask_tracker.get(t)
+        if prev is not None and not _needs_mask(prev) and t != lock_pos:
+            return mask_tracker.get(t) if mask_tracker.get(t).mask is not None else None
+        ev = mask_tracker.get(t)
+        if ev.mask is None:
+            if reverse:
+                mask_tracker.propagate_backward(t, min(window, abs(t - (mask_tracker._last_propagated or t))))
+            else:
+                start = (mask_tracker._last_propagated or t) + 1
+                mask_tracker.propagate_forward(start, min(window, max(1, t - start + 1)))
+            ev = mask_tracker.ensure(t)
+            sam_used += 1
+        return ev
+
     for t in range(lock_pos + 1, len(frames)):
-        out[t] = fwd.step(frames[t], frames[t].camera)
-    meta = {"forward": fwd.summary()}
+        ev = mask_for(t, out[t - 1], False)
+        out[t] = fwd.step(frames[t], frames[t].camera, ev)
+        if out[t].state == TargetState.VISIBLE_CONFIDENT and mask_tracker is not None and out[t].has_box:
+            # Keep SAM memory aligned with the last clean box without forcing a box.
+            if getattr(cfg, "enable_target_segmentation", False) and out[t].update_skip is None:
+                pass
+    meta = {"forward": fwd.summary(), "sam_propagate_calls": sam_used}
     if bidirectional and lock_pos > 0:
         bwd = LockedTargetIdentity(cfg, fps, image_wh)
         bwd.initialize(frames[lock_pos], lock_det)
         for t in range(lock_pos - 1, -1, -1):
             cam = frames[t + 1].camera
-            out[t] = bwd.step(frames[t], None if cam is None else invert(cam))
+            ev = mask_for(t, out[t + 1], True)
+            out[t] = bwd.step(frames[t], None if cam is None else invert(cam), ev)
         meta["backward"] = bwd.summary()
     counts: dict[str, int] = {}
     for tf in out:

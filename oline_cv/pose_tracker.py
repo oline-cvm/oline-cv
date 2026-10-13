@@ -583,13 +583,25 @@ class PoseTracker:
             from oline_cv.tracking.camera_motion import CameraMotionEstimator
 
             cmc = CameraMotionEstimator()
+        recover_at = min(cfg.detector_threshold, cfg.target_recovery_detection_threshold)
         results = []
         n_frames = max(1, len(frames))
         for idx, frame in enumerate(frames):
-            boxes, confs = self._detect_boxes(frame, conf=cfg.detector_threshold)
+            boxes, confs = self._detect_boxes(frame, conf=recover_at)
             emb = reid.extract(frame, boxes) if len(boxes) else None
-            cam = cmc.estimate(frame, boxes) if cmc is not None else None
-            results.append(tracker.update(idx, boxes, confs, emb, camera=cam))
+            strong = confs >= cfg.detector_threshold if len(confs) else np.zeros(0, dtype=bool)
+            cam = cmc.estimate(frame, boxes[strong] if len(boxes) else boxes) if cmc is not None else None
+            fr = tracker.update(
+                idx,
+                boxes[strong] if len(boxes) else boxes,
+                confs[strong] if len(confs) else confs,
+                None if emb is None or not np.any(strong) else emb[strong],
+                camera=cam,
+            )
+            weak = ~strong if len(confs) else np.zeros(0, dtype=bool)
+            if np.any(weak):
+                fr.append_recovery(boxes[weak], confs[weak], emb[weak])
+            results.append(fr)
             if (idx + 1) % 10 == 0 or idx + 1 == n_frames:
                 _prog(16.0 + 44.0 * (idx + 1) / n_frames, f"Tracking players ({idx + 1}/{n_frames})…", "track")
             if (idx + 1) % 30 == 0:
@@ -609,8 +621,27 @@ class PoseTracker:
         self._anchor_center = _bbox_center(self._anchor_bbox)
         self._lock_origin = self._anchor_center.copy()
 
+        from oline_cv.tracking.target_mask import TargetMaskUnavailableError, build_target_mask_tracker
+
+        mask_tracker, seg_status = build_target_mask_tracker(cfg, frames)
+        if cfg.require_sam_if_configured and cfg.enable_target_segmentation and not seg_status.get("available"):
+            raise TargetMaskUnavailableError(seg_status.get("reason") or "SAM 2.1 is required but unavailable")
+        if cfg.enable_target_segmentation and not seg_status.get("available"):
+            print(
+                f"  WARNING: SAM 2.1 target segmentation is OFF ({seg_status.get('reason', 'unavailable')}). "
+                "Tracking mode=degraded — occlusion recovery will not run.",
+                flush=True,
+            )
+        if seg_status.get("available"):
+            _prog(64, "Seeding target mask…", "track")
+            print("  SAM 2.1: following the tapped player through the clip…", flush=True)
+            mask_tracker.initialize(frames, lock_frame, lock_box, (W, H))
+        else:
+            mask_tracker = None
+
         targets, tmeta = run_target_identity(
-            results, lock_frame, lock_idx, cfg, rate, (W, H), cfg.target_bidirectional
+            results, lock_frame, lock_idx, cfg, rate, (W, H), cfg.target_bidirectional,
+            mask_tracker=mask_tracker,
         )
         _prog(66, "Reading body position…", "track")
         ol_poses, dl_poses = self._poses_from_targets(frames, results, targets, rate, _prog)
@@ -621,10 +652,28 @@ class PoseTracker:
             if a.track_id is not None and b.track_id is not None and a.track_id != b.track_id
         )
         reid_info = reid.describe()
-        self.lock_meta["tracker"] = "deep_hm_sort+locked_target"
+        mode = seg_status.get("tracking_mode") or "deep_hm_sort"
+        self.lock_meta["tracker"] = "deep_hm_sort+locked_target+sam2" if seg_status.get("available") else "deep_hm_sort+locked_target"
         self.lock_meta["tracker_backend"] = "deep_hm_sort"
         self.lock_meta["anchor_bbox"] = [float(v) for v in lock_box]
         self.lock_meta["reid"] = reid_info
+        self.lock_meta["segmentation"] = {k: v for k, v in seg_status.items() if k != "reason"} | (
+            {"unavailable_reason": seg_status.get("reason")} if not seg_status.get("available") else {}
+        )
+        self.lock_meta["tracking_quality"] = {
+            "tracking_mode": mode,
+            "reid_mode": reid_info.get("quality") or reid_info.get("backend"),
+            "reid_backend": reid_info.get("backend"),
+            "target_segmentation_available": bool(seg_status.get("available")),
+            "target_segmentation_backend": seg_status.get("backend"),
+            "degraded": mode == "degraded",
+        }
+        if reid_info.get("quality") == "generic":
+            print(
+                "  WARNING: ReID is generic detector embeddings (not sports OSNet). "
+                "Set OLINE_REID_WEIGHTS for stronger identity.",
+                flush=True,
+            )
         self.lock_meta["deep_hm_sort"] = tracker.summary()
         self.lock_meta["target"] = {
             **tmeta,
@@ -636,7 +685,8 @@ class PoseTracker:
         counts = tmeta["state_counts"]
         print(
             f"  deep_hm_sort: {tracker.summary()['tracklets']} tracklets, reid={reid_info['backend']} "
-            f"({reid_info['quality']}); target {counts}, {tmeta['reacquisitions']} reacquisitions",
+            f"({reid_info['quality']}), seg={seg_status.get('backend')}/{mode}; "
+            f"target {counts}, {tmeta['reacquisitions']} reacquisitions",
             flush=True,
         )
         if self.config.debug_tracking:
@@ -654,10 +704,14 @@ class PoseTracker:
             "video": str(video_path) if video_path else None,
             "fps": fps,
             "config": self.config.to_dict()["deep_hm"],
-            "lock": {k: self.lock_meta.get(k) for k in ("method", "pick_xy", "anchor_bbox", "reid")},
+            "lock": {k: self.lock_meta.get(k) for k in ("method", "pick_xy", "anchor_bbox", "reid", "tracking_quality", "segmentation")},
         }
         trace = write_trace(root / f"{stem}_tracking.jsonl", results, targets, header)
-        video = write_debug_video(root / f"{stem}_tracking_debug.mp4", frames, results, targets, fps)
+        tq = self.lock_meta.get("tracking_quality") or {}
+        video = write_debug_video(
+            root / f"{stem}_tracking_debug.mp4", frames, results, targets, fps,
+            overlay_info={"reid": tq.get("reid_backend"), "seg": tq.get("target_segmentation_backend")},
+        )
         self.lock_meta["debug"] = {"trace": str(trace), "video": str(video) if video else None}
         print(f"  tracking debug: {trace}  {video}", flush=True)
 
@@ -694,7 +748,8 @@ class PoseTracker:
             assoc = None if tf is None else {
                 k: v for k, v in tf.to_dict().items()
                 if k in ("cost", "d_iou", "d_app", "margin", "frames_since_seen", "reason",
-                         "appearance_updated")
+                         "appearance_updated", "risk", "sam_active", "sam_mask_available",
+                         "mask_coverage", "recovery")
             }
             if tf is None or not tf.has_box:
                 pose = self._empty(idx, ts)
