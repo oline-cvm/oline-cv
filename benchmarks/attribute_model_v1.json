@@ -1,0 +1,225 @@
+{
+  "schema_version": "1.0",
+  "kind": "attribute_midpoint_v1",
+  "input_rep_ids": [
+    "casey_01",
+    "casey_02",
+    "casey_03",
+    "casey_04",
+    "casey_05",
+    "casey_06",
+    "casey_07",
+    "casey_08",
+    "fano_01",
+    "fano_02",
+    "fano_03",
+    "fano_04"
+  ],
+  "attributes": {
+    "stance": {
+      "rules": [
+        {
+          "feature": "mean_knee_flexion_deg",
+          "threshold": 150.0713024262311,
+          "higher_is_good": false,
+          "good_mean": 145.17023813901204,
+          "bad_mean": 154.97236671345016,
+          "n_good": 10,
+          "n_bad": 1
+        },
+        {
+          "feature": "mean_hip_height",
+          "threshold": 0.5870388696313056,
+          "higher_is_good": true,
+          "good_mean": 0.5908500474036711,
+          "bad_mean": 0.58322769185894,
+          "n_good": 10,
+          "n_bad": 1
+        },
+        {
+          "feature": "hip_height_at_lowest",
+          "threshold": 0.40643353152110806,
+          "higher_is_good": true,
+          "good_mean": 0.42092744265115345,
+          "bad_mean": 0.3919396203910627,
+          "n_good": 10,
+          "n_bad": 1
+        },
+        {
+          "feature": "mean_torso_angle_deg",
+          "threshold": 18.97205157431115,
+          "higher_is_good": false,
+          "good_mean": 16.71968386881638,
+          "bad_mean": 21.224419279805918,
+          "n_good": 10,
+          "n_bad": 1
+        },
+        {
+          "feature": "posture_confidence",
+          "threshold": 0.7653911630889424,
+          "higher_is_good": false,
+          "good_mean": 0.61531255606161,
+          "bad_mean": 0.9154697701162748,
+          "n_good": 11,
+          "n_bad": 1
+        }
+      ],
+      "n_rules": 5
+    },
+    "first_step": {
+      "rules": [
+        {
+          "feature": "reaction_time_ms",
+          "threshold": 122.28147876080611,
+          "higher_is_good": false,
+          "good_mean": 62.89806130083908,
+          "bad_mean": 181.66489622077313,
+          "n_good": 3,
+          "n_bad": 6
+        },
+        {
+          "feature": "first_step_acceleration",
+          "threshold": 10.998638854749473,
+          "higher_is_good": false,
+          "good_mean": 5.1905803096223595,
+          "bad_mean": 16.806697399876587,
+          "n_good": 3,
+          "n_bad": 6
+        },
+        {
+          "feature": "initiated_by_foot",
+          "threshold": 0.5833333333333334,
+          "higher_is_good": false,
+          "good_mean": 0.3333333333333333,
+          "bad_mean": 0.8333333333333334,
+          "n_good": 3,
+          "n_bad": 6
+        }
+      ],
+      "n_rules": 3
+    },
+    "feet": {
+      "rules": [
+        {
+          "feature": "mean_base_width",
+          "threshold": 0.31074235549738105,
+          "higher_is_good": false,
+          "good_mean": 0.2995888580868412,
+          "bad_mean": 0.32189585290792083,
+          "n_good": 7,
+          "n_bad": 4
+        },
+        {
+          "feature": "min_base_width",
+          "threshold": 0.030975920601559077,
+          "higher_is_good": false,
+          "good_mean": 0.018888067371886814,
+          "bad_mean": 0.04306377383123134,
+          "n_good": 7,
+          "n_bad": 4
+        },
+        {
+          "feature": "step_cadence_hz",
+          "threshold": 4.021497253023689,
+          "higher_is_good": true,
+          "good_mean": 4.612368237672875,
+          "bad_mean": 3.430626268374503,
+          "n_good": 8,
+          "n_bad": 4
+        },
+        {
+          "feature": "feet_close_to_ground_score",
+          "threshold": 0.1478571397520866,
+          "higher_is_good": false,
+          "good_mean": 0.0,
+          "bad_mean": 0.2957142795041732,
+          "n_good": 7,
+          "n_bad": 4
+        },
+        {
+          "feature": "set_width",
+          "threshold": 0.17328981022217782,
+          "higher_is_good": true,
+          "good_mean": 0.26095315532139673,
+          "bad_mean": 0.0856264651229589,
+          "n_good": 8,
+          "n_bad": 4
+        }
+      ],
+      "n_rules": 5
+    },
+    "hands": {
+      "rules": [
+        {
+          "feature": "punch_ms",
+          "threshold": 705.4066708754209,
+          "higher_is_good": false,
+          "good_mean": 662.4421296296297,
+          "bad_mean": 748.3712121212121,
+          "n_good": 4,
+          "n_bad": 1
+        },
+        {
+          "feature": "approximate_hand_placement_score",
+          "threshold": 0.640686274509804,
+          "higher_is_good": false,
+          "good_mean": 0.6063725490196079,
+          "bad_mean": 0.675,
+          "n_good": 4,
+          "n_bad": 1
+        }
+      ],
+      "n_rules": 2
+    },
+    "hips": {
+      "rules": [
+        {
+          "feature": "mean_hip_height",
+          "threshold": 0.5917025210739053,
+          "higher_is_good": false,
+          "good_mean": 0.5883026078904439,
+          "bad_mean": 0.5951024342573668,
+          "n_good": 8,
+          "n_bad": 3
+        },
+        {
+          "feature": "hip_height_at_lowest",
+          "threshold": 0.41873157691222146,
+          "higher_is_good": false,
+          "good_mean": 0.41776491708585356,
+          "bad_mean": 0.41969823673858936,
+          "n_good": 8,
+          "n_bad": 3
+        },
+        {
+          "feature": "anchor_give",
+          "threshold": 0.6057065099700945,
+          "higher_is_good": false,
+          "good_mean": 0.5274842290469798,
+          "bad_mean": 0.6839287908932092,
+          "n_good": 2,
+          "n_bad": 1
+        },
+        {
+          "feature": "mean_torso_angle_deg",
+          "threshold": 15.243672501625479,
+          "higher_is_good": true,
+          "good_mean": 19.391844591643363,
+          "bad_mean": 11.095500411607595,
+          "n_good": 8,
+          "n_bad": 3
+        },
+        {
+          "feature": "initiated_by_foot",
+          "threshold": 0.6190476190476191,
+          "higher_is_good": false,
+          "good_mean": 0.5714285714285714,
+          "bad_mean": 0.6666666666666666,
+          "n_good": 7,
+          "n_bad": 3
+        }
+      ],
+      "n_rules": 5
+    }
+  }
+}

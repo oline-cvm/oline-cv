@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "dataset_name": "nfl_hs_v1",
+  "created_at": "2026-09-30T04:29:25.574005+00:00",
+  "dataset_root": "data\\reference",
+  "context": {
+    "position": "unknown",
+    "play_type": "pass",
+    "technique": "unknown",
+    "side": "unknown"
+  },
+  "selection": {
+    "quality": [
+      "good",
+      "not_good",
+      "uncertain"
+    ],
+    "min_trust_score": 0.0,
+    "filters": {}
+  },
+  "n_reps": 12,
+  "n_excluded": 0,
+  "reps": [
+    "casey_01",
+    "casey_02",
+    "casey_03",
+    "casey_04",
+    "casey_05",
+    "casey_06",
+    "casey_07",
+    "casey_08",
+    "fano_01",
+    "fano_02",
+    "fano_03",
+    "fano_04"
+  ],
+  "analyses": [
+    "analyses/casey_01_analysis.json",
+    "analyses/casey_02_analysis.json",
+    "analyses/casey_03_analysis.json",
+    "analyses/casey_04_analysis.json",
+    "analyses/casey_05_analysis.json",
+    "analyses/casey_06_analysis.json",
+    "analyses/casey_07_analysis.json",
+    "analyses/casey_08_analysis.json",
+    "analyses/fano_01_analysis.json",
+    "analyses/fano_02_analysis.json",
+    "analyses/fano_03_analysis.json",
+    "analyses/fano_04_analysis.json"
+  ],
+  "excluded": []
+}

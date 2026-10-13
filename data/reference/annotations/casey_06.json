@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "rep_id": "casey_06",
+  "video_file": "casey_06.mov",
+  "player": {
+    "level": "high_school",
+    "position": "unknown"
+  },
+  "play": {
+    "play_type": "pass",
+    "technique": "unknown",
+    "side": "unknown"
+  },
+  "expert": {
+    "quality": "not_good",
+    "notes": [
+      "player: Kage Casey",
+      "stance: good",
+      "first_step: bad",
+      "feet: bad",
+      "hands: good",
+      "hips: bad"
+    ],
+    "attributes": {
+      "stance": "good",
+      "first_step": "bad",
+      "feet": "bad",
+      "hands": "good",
+      "hips": "bad"
+    }
+  }
+}
