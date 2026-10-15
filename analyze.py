@@ -53,6 +53,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--movement-threshold", type=float, default=None)
     p.add_argument("--min-keypoint-confidence", type=float, default=None)
     p.add_argument("--brief", action="store_true")
+    p.add_argument(
+        "--benchmark",
+        type=str,
+        default=None,
+        help="Optional benchmark JSON; appends result['benchmark_comparison']",
+    )
+    p.add_argument("--position", type=str, default=None, help="OL position label for benchmark context")
+    p.add_argument("--technique", type=str, default=None, help="Technique label for benchmark context")
+    p.add_argument("--side", type=str, default=None, help="left / right / interior")
+    p.add_argument(
+        "--attribute-model",
+        type=str,
+        default=None,
+        help="Optional five-attribute good/bad model JSON",
+    )
+    p.add_argument(
+        "--tracker",
+        choices=["deep-hm-sort", "legacy-botsort"],
+        default=None,
+        help="Tracking backend (default deep-hm-sort; legacy-botsort is deprecated)",
+    )
+    p.add_argument("--pick-t", type=float, default=None, help="Video time (s) of the --pick-xy tap")
+    p.add_argument("--reid-backend", choices=["auto", "osnet", "yolo_embed"], default=None)
+    p.add_argument("--reid-weights", type=str, default=None, help="Local OSNet ReID checkpoint")
+    p.add_argument(
+        "--debug-tracking",
+        action="store_true",
+        help="Write per-frame tracking JSONL and a debug video to outputs/track_debug",
+    )
+    p.add_argument("--no-target-segmentation", action="store_true", help="Disable SAM 2.1 occlusion recovery")
+    p.add_argument("--sam2-checkpoint", type=str, default=None, help="Local SAM 2.1 .pt checkpoint")
+    p.add_argument("--require-sam", action="store_true", help="Fail if SAM 2.1 is requested but unavailable")
     return p
 
 
@@ -86,6 +118,29 @@ def main(argv: list[str] | None = None) -> int:
             print("--pick-xy must be x,y", file=sys.stderr)
             return 1
         cfg.athlete_pick_xy = (parts[0], parts[1])
+    if args.benchmark:
+        cfg.benchmark_path = args.benchmark
+        cfg.benchmark_position = args.position
+        cfg.benchmark_technique = args.technique
+        cfg.benchmark_side = args.side
+    if args.attribute_model:
+        cfg.attribute_model_path = args.attribute_model
+    if args.tracker:
+        cfg.tracker_backend = args.tracker.replace("-", "_")
+    if args.pick_t is not None:
+        cfg.athlete_pick_time_s = args.pick_t
+    if args.reid_backend:
+        cfg.deep_hm.reid_backend = args.reid_backend
+    if args.reid_weights:
+        cfg.deep_hm.reid_weights = args.reid_weights
+    if args.debug_tracking:
+        cfg.debug_tracking = True
+    if args.no_target_segmentation:
+        cfg.deep_hm.enable_target_segmentation = False
+    if args.sam2_checkpoint:
+        cfg.deep_hm.sam2_checkpoint = args.sam2_checkpoint
+    if args.require_sam:
+        cfg.deep_hm.require_sam_if_configured = True
 
     print(f"Analyzing {video} ...")
     result = analyze_video(

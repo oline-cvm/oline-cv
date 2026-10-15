@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parent
 UPLOAD_DIR = ROOT / "uploads"
 OUTPUT_DIR = ROOT / "outputs"
 STATIC_DIR = ROOT / "dashboard"
+ATTRIBUTE_MODEL_PATH = ROOT / "benchmarks" / "attribute_model_v1.json"
+REFERENCE_BENCHMARK_PATH = ROOT / "benchmarks" / "nfl_hs_v1.json"
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -107,6 +109,122 @@ def motion3d_data(clip: str) -> JSONResponse:
     return JSONResponse(payload)
 
 
+ATTRIBUTE_LABELS = {
+    "stance": "Stance",
+    "first_step": "First step",
+    "feet": "Feet",
+    "hands": "Hands",
+    "hips": "Hips",
+}
+
+
+def _feature_label(key: str) -> tuple[str, str]:
+    from oline_cv.benchmark.schema import FEATURE_REGISTRY
+
+    spec = FEATURE_REGISTRY.get(key)
+    if spec:
+        return spec.display_name, spec.unit
+    return key.replace("_", " ").capitalize(), ""
+
+
+def _attach_grading(result: dict[str, Any], analysis_json: str | None = None) -> None:
+    """Grade the rep against the expert-labeled high-school reference reps (in place).
+
+    Skipped silently when the model/benchmark files have not been built yet.
+    """
+    from oline_cv.benchmark.attributes import attach_attribute_scores
+    from oline_cv.benchmark.compare import attach_benchmark_comparison
+    from oline_cv.benchmark.storage import load_json
+
+    changed = False
+    if ATTRIBUTE_MODEL_PATH.exists() and "attribute_scores" not in result:
+        try:
+            attach_attribute_scores(result, load_json(str(ATTRIBUTE_MODEL_PATH)))
+        except Exception as exc:
+            result["attribute_scores"] = {"error": str(exc)}
+        changed = True
+    if REFERENCE_BENCHMARK_PATH.exists() and "benchmark_comparison" not in result:
+        attach_benchmark_comparison(
+            result, str(REFERENCE_BENCHMARK_PATH), source_analysis_path=analysis_json
+        )
+        changed = True
+    if changed and analysis_json and Path(analysis_json).exists():
+        Path(analysis_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+
+def _pack_grades(result: dict[str, Any]) -> dict[str, Any] | None:
+    scores = (result.get("attribute_scores") or {}).get("attributes")
+    comparison = result.get("benchmark_comparison") or {}
+    if not scores and not comparison.get("features"):
+        return None
+
+    attributes = []
+    for key, label in ATTRIBUTE_LABELS.items():
+        row = (scores or {}).get(key) or {}
+        evidence = []
+        for ev in row.get("evidence") or []:
+            name, unit = _feature_label(ev["feature"])
+            evidence.append(
+                {
+                    "label": name,
+                    "unit": unit,
+                    "value": ev["player_value"],
+                    "threshold": ev["threshold"],
+                    "higher_is_good": ev["higher_is_good"],
+                    "vote": ev["vote"],
+                }
+            )
+        attributes.append(
+            {
+                "key": key,
+                "label": label,
+                "verdict": row.get("verdict", "uncertain"),
+                "n_votes": row.get("n_votes", 0),
+                "n_good_votes": row.get("n_good_votes", 0),
+                "evidence": evidence,
+            }
+        )
+
+    measurements = []
+    for row in comparison.get("features") or []:
+        if row.get("player_value") is None or not row.get("percentile_range"):
+            continue
+        if row["status"] == "insufficient_reference_data":
+            continue
+        measurements.append(
+            {
+                "label": row["display_name"],
+                "unit": row["unit"],
+                "category": row["category"],
+                "value": row["player_value"],
+                "mean": row["benchmark_mean"],
+                "range": row["percentile_range"],
+                "z": row["z_score"],
+                "status": row["status"],
+            }
+        )
+
+    benchmark_meta: dict[str, Any] = {}
+    if REFERENCE_BENCHMARK_PATH.exists():
+        try:
+            bench = json.loads(REFERENCE_BENCHMARK_PATH.read_text(encoding="utf-8"))
+            benchmark_meta = {
+                "name": bench.get("name"),
+                "n_reps": bench.get("n_reps"),
+                "rep_ids": bench.get("input_rep_ids") or [],
+            }
+        except (OSError, ValueError):
+            pass
+
+    return {
+        "attributes": attributes,
+        "measurements": measurements,
+        "benchmark": benchmark_meta,
+        "error": (result.get("attribute_scores") or {}).get("error")
+        or comparison.get("error"),
+    }
+
+
 def _pack_result(
     jersey: int | None, result: dict[str, Any], web_path: str | None, json_name: str | None
 ) -> dict:
@@ -144,6 +262,7 @@ def _pack_result(
         "overlay_url": f"/outputs/{Path(web_path).name}" if web_path else None,
         "json_url": f"/outputs/{json_name}" if json_name else None,
         "notes": q.get("notes", []),
+        "grades": _pack_grades(result),
     }
     brief = build_coach_brief(packed)
     packed["brief"] = brief
@@ -171,6 +290,14 @@ def _parse_pick(pick_x: str, pick_y: str) -> tuple[float, float] | None:
     return None
 
 
+def _parse_time(value: str) -> float | None:
+    try:
+        t = float(value)
+    except (TypeError, ValueError):
+        return None
+    return t if t >= 0 else None
+
+
 def _save_upload(upload: UploadFile, job_id: str, tag: str) -> str:
     suffix = Path(upload.filename or "clip.mp4").suffix or ".mp4"
     dest = UPLOAD_DIR / f"{job_id}{tag}{suffix}"
@@ -194,6 +321,7 @@ async def analyze(
     snap_frame: int | None = Form(None),
     pick_x: str = Form(""),
     pick_y: str = Form(""),
+    pick_t: str = Form(""),
     role: str = Form("sideline"),
     file2: UploadFile | None = File(None),
     jersey2: str = Form(""),
@@ -213,6 +341,7 @@ async def analyze(
                 "role": primary_role,
                 "jersey": _parse_jersey(jersey),
                 "pick_xy": _parse_pick(pick_x, pick_y),
+                "pick_t": _parse_time(pick_t),
                 "snap_frame": snap_frame,
             }
         )
@@ -254,7 +383,8 @@ async def analyze(
     else:
         s = specs[0]
         background_tasks.add_task(
-            _run_job, job_id, s["path"], s["jersey"], play_type, s["snap_frame"], s["pick_xy"]
+            _run_job, job_id, s["path"], s["jersey"], play_type, s["snap_frame"], s["pick_xy"],
+            s.get("pick_t"),
         )
     return JSONResponse({"job_id": job_id})
 
@@ -327,6 +457,9 @@ def _finalize_job(
     view_arts: list | None = None,
 ) -> None:
     """Shared tail: web-encode preview, keyframes, pack, PDF, store result."""
+    _set_progress(job, 94, "Grading stance, first step, feet, hands, hips…", "metrics")
+    _attach_grading(result, out_json)
+
     _set_progress(job, 95, "Encoding web preview…", "encode")
     web_path = ensure_web_mp4(out_overlay, str(OUTPUT_DIR / f"{job_id}_web.mp4"))
 
@@ -373,6 +506,7 @@ def _run_job(
     play_type: str,
     snap_frame: int | None,
     pick_xy: tuple[float, float] | None,
+    pick_t: float | None = None,
 ) -> None:
     job = JOBS[job_id]
     try:
@@ -391,6 +525,7 @@ def _run_job(
         cfg = AnalysisConfig(
             target_jersey=jersey,
             athlete_pick_xy=pick_xy,
+            athlete_pick_time_s=pick_t if pick_xy is not None else None,
             write_overlay_video=True,
             overlay_zoom_on_athlete=False,
             play_type="run" if play_type == "run" else "pass",
@@ -729,6 +864,7 @@ def demo_existing() -> JSONResponse:
         from oline_cv.trust import compute_trust
 
         data["trust"] = compute_trust(data)
+    _attach_grading(data)
     web = ensure_web_mp4(str(overlay), str(OUTPUT_DIR / "footage_web.mp4")) if overlay.exists() else None
     packed = _pack_result(data.get("target_jersey"), data, web, None)
     packed["id"] = "demo"

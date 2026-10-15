@@ -26,7 +26,6 @@ function mapClickToVideo(cx, cy, rect, vw, vh) {
   return { x: lx / dispW, y: ly / dispH };
 }
 
-// One "lock the player" stage. Two instances (sideline + endzone) share this.
 function makePicker(ids, hintDefault) {
   const els = {
     stage: $(ids.stage),
@@ -82,7 +81,7 @@ function makePicker(ids, hintDefault) {
       els.empty.classList.add("hide");
       els.video.classList.add("on");
       draw();
-      els.hint.textContent = "Tap the offensive lineman to lock";
+      els.hint.textContent = "Tap the tackle to lock (best results)";
     };
   }
 
@@ -95,7 +94,7 @@ function makePicker(ids, hintDefault) {
     const rect = v.getBoundingClientRect();
     const { x, y } = mapClickToVideo(e.clientX, e.clientY, rect, v.videoWidth, v.videoHeight);
     if (x == null) return;
-    pick = { x, y };
+    pick = { x, y, t: v.currentTime };
     els.coord.textContent = "player locked";
     els.hint.textContent = "Locked — hit Analyze rep";
     draw();
@@ -111,7 +110,7 @@ function makePicker(ids, hintDefault) {
   return { load, draw, getPick: () => pick };
 }
 
-const sidelinePicker = makePicker(
+const picker = makePicker(
   {
     stage: "pick-stage",
     video: "pick-video",
@@ -121,20 +120,7 @@ const sidelinePicker = makePicker(
     coord: "pick-coord",
     clear: "clear-pick",
   },
-  "Load film, then tap the OL"
-);
-
-const endzonePicker = makePicker(
-  {
-    stage: "pick-stage2",
-    video: "pick-video2",
-    canvas: "pick-canvas2",
-    empty: "pick-empty2",
-    hint: "pick-hint2",
-    coord: "pick-coord2",
-    clear: "clear-pick2",
-  },
-  "Load film, then tap the same OL"
+  "Load film, then tap the tackle"
 );
 
 $("file").addEventListener("change", () => {
@@ -142,28 +128,18 @@ $("file").addEventListener("change", () => {
   if (!f) return;
   $("file-label").textContent = f.name;
   $("pick-box").hidden = false;
-  sidelinePicker.load(f);
-});
-
-$("file2").addEventListener("change", () => {
-  const f = $("file2").files?.[0];
-  if (!f) return;
-  $("file-label2").textContent = f.name;
-  $("pick-box2").hidden = false;
-  endzonePicker.load(f);
+  picker.load(f);
 });
 
 window.addEventListener("resize", () => {
-  sidelinePicker.draw();
-  endzonePicker.draw();
+  picker.draw();
 });
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const file1 = $("file").files?.[0];
-  const file2 = $("file2").files?.[0];
-  if (!file1 && !file2) {
-    setStatus("Add at least one film — sideline, endzone, or both");
+  if (!file1) {
+    setStatus("Upload a clip first");
     return;
   }
 
@@ -173,29 +149,15 @@ $("form").addEventListener("submit", async (e) => {
   const snap = $("snap").value;
   if ($("show-advanced").checked && snap !== "") fd.append("snap_frame", snap);
 
-  if (file1) {
-    fd.append("file", file1);
-    fd.append("role", "sideline");
-    const pick1 = sidelinePicker.getPick();
-    if (pick1) {
-      fd.append("pick_x", String(pick1.x));
-      fd.append("pick_y", String(pick1.y));
-    }
+  fd.append("file", file1);
+  const pick1 = picker.getPick();
+  if (pick1) {
+    fd.append("pick_x", String(pick1.x));
+    fd.append("pick_y", String(pick1.y));
+    fd.append("pick_t", String(pick1.t ?? 0));
   }
 
-  if (file2) {
-    fd.append("file2", file2);
-    fd.append("role2", "endzone");
-    fd.append("jersey2", $("jersey").value || "");
-    const pick2 = endzonePicker.getPick();
-    if (pick2) {
-      fd.append("pick_x2", String(pick2.x));
-      fd.append("pick_y2", String(pick2.y));
-    }
-  }
-
-  const twoView = !!file1 && !!file2;
-  setBusy(true, twoView ? "Uploading both angles…" : "Uploading film…", 2, "ingest");
+  setBusy(true, "Uploading clip…", 2, "ingest");
   try {
     const res = await fetch("/api/analyze", { method: "POST", body: fd });
     const data = await res.json();
@@ -324,7 +286,7 @@ function buildCoachBrief(r) {
 
   // Posture
   const posture = String(r.posture_classification || "");
-  if (posture.includes("bender") || flags.has("waist_bender") || /bender/.test([...flags].join(" "))) {
+  if (posture === "waist_bender" || flags.has("waist_bender")) {
     fix.push({
       title: "Stay out of the waist bend",
       detail: "Leaning at the waist. Cue: bend at the knees/ankles, keep the chest over the toes.",
@@ -559,8 +521,160 @@ function renderMetrics(r) {
     .join("");
 }
 
+const ATTR_ORDER = [
+  ["stance", "Stance"],
+  ["first_step", "First step"],
+  ["feet", "Feet"],
+  ["hands", "Hands"],
+  ["hips", "Hips"],
+];
+
+const VERDICT_TEXT = { good: "Good", bad: "Bad", uncertain: "Not sure" };
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+function fmtValue(v, unit) {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  const n = Number(v);
+  const u = String(unit || "").toLowerCase();
+  if (u.startsWith("deg")) return `${Math.round(n)}°`;
+  if (u === "ms") return `${Math.round(n)} ms`;
+  if (u === "hz") return `${n.toFixed(2)} Hz`;
+  if (Math.abs(n) >= 100) return String(Math.round(n));
+  if (Math.abs(n) >= 10) return n.toFixed(1);
+  return n.toFixed(2);
+}
+
+function attrSubline(a) {
+  if (!a.n_votes) {
+    return a.key === "hands"
+      ? "Not enough labeled film on hands yet"
+      : "Couldn't measure this on this clip";
+  }
+  return `${a.n_good_votes} of ${a.n_votes} signals look good`;
+}
+
+function renderScorecard(r) {
+  const grades = r.grades;
+  const grid = $("attr-grid");
+  const tally = $("scorecard-tally");
+  const title = $("scorecard-title");
+  const foot = $("scorecard-foot");
+
+  if (!grades || !grades.attributes?.length) {
+    title.textContent = "Grading unavailable for this rep";
+    tally.hidden = true;
+    foot.textContent = grades?.error || "Build benchmarks/attribute_model_v1.json to enable grading.";
+    grid.innerHTML = ATTR_ORDER.map(
+      ([, label]) => `<div class="attr-card placeholder"><span class="attr-name">${label}</span><span class="attr-badge">—</span></div>`
+    ).join("");
+    return;
+  }
+
+  const byKey = Object.fromEntries(grades.attributes.map((a) => [a.key, a]));
+  const attrs = ATTR_ORDER.map(([k, label]) => byKey[k] || { key: k, label, verdict: "uncertain", n_votes: 0, n_good_votes: 0, evidence: [] });
+  const good = attrs.filter((a) => a.verdict === "good");
+  const bad = attrs.filter((a) => a.verdict === "bad");
+  const unsure = attrs.length - good.length - bad.length;
+
+  if (bad.length) title.textContent = `Work on: ${bad.map((a) => a.label.toLowerCase()).join(", ")}`;
+  else if (good.length) title.textContent = "Good on every graded trait";
+  else title.textContent = "Not enough signal to grade this rep";
+
+  tally.hidden = false;
+  tally.innerHTML =
+    `<span class="tally good"><b>${good.length}</b> good</span>` +
+    `<span class="tally bad"><b>${bad.length}</b> bad</span>` +
+    `<span class="tally unsure"><b>${unsure}</b> not sure</span>`;
+
+  grid.innerHTML = attrs
+    .map((a) => {
+      const ev = (a.evidence || [])
+        .map((e) => {
+          const cmp = e.higher_is_good ? "≥" : "≤";
+          return `<li class="${e.vote}">
+            <span class="ev-mark">${e.vote === "good" ? "✓" : "✗"}</span>
+            <span class="ev-name">${escapeHtml(e.label)}</span>
+            <span class="ev-val">${fmtValue(e.value, e.unit)} <em>good ${cmp} ${fmtValue(e.threshold, e.unit)}</em></span>
+          </li>`;
+        })
+        .join("");
+      return `<div class="attr-card ${a.verdict}">
+        <div class="attr-top">
+          <span class="attr-name">${escapeHtml(a.label)}</span>
+          <span class="attr-badge">${VERDICT_TEXT[a.verdict] || "Not sure"}</span>
+        </div>
+        <p class="attr-sub">${attrSubline(a)}</p>
+        ${ev ? `<details><summary>Why</summary><ul class="ev-list">${ev}</ul></details>` : ""}
+      </div>`;
+    })
+    .join("");
+
+  const b = grades.benchmark || {};
+  foot.textContent = b.n_reps
+    ? `Grades come from expert-labeled high-school reps. Measurements compare to all ${b.n_reps} reference reps. Early model — more labeled film makes it sharper.`
+    : "Grades come from expert-labeled high-school reps.";
+}
+
+const STATUS_TEXT = {
+  within_reference_range: "In range",
+  above_reference_range: "Above",
+  below_reference_range: "Below",
+};
+
+function renderMeasures(r) {
+  const section = $("measures");
+  const list = $("measure-list");
+  const rows = r.grades?.measurements || [];
+  section.hidden = !rows.length;
+  if (!rows.length) {
+    list.innerHTML = "";
+    return;
+  }
+  const sorted = [...rows].sort((x, y) => {
+    const ox = x.status === "within_reference_range" ? 1 : 0;
+    const oy = y.status === "within_reference_range" ? 1 : 0;
+    if (ox !== oy) return ox - oy;
+    return Math.abs(y.z ?? 0) - Math.abs(x.z ?? 0);
+  });
+
+  list.innerHTML = sorted
+    .map((m) => {
+      const { p10, p25, p75, p90 } = m.range;
+      const vals = [p10, p25, p75, p90, m.value].filter((v) => v != null).map(Number);
+      let lo = Math.min(...vals);
+      let hi = Math.max(...vals);
+      const pad = (hi - lo) * 0.12 || Math.abs(hi) * 0.1 || 1;
+      lo -= pad;
+      hi += pad;
+      const pos = (v) => `${(((Number(v) - lo) / (hi - lo)) * 100).toFixed(1)}%`;
+      const inRange = m.status === "within_reference_range";
+      return `<div class="measure ${inRange ? "in" : "out"}">
+        <div class="measure-label">
+          <span>${escapeHtml(m.label)}</span>
+          <small>${pretty(m.category)}</small>
+        </div>
+        <div class="measure-bar">
+          <div class="mb-whisker" style="left:${pos(p10 ?? p25)};width:calc(${pos(p90 ?? p75)} - ${pos(p10 ?? p25)})"></div>
+          <div class="mb-band" style="left:${pos(p25)};width:calc(${pos(p75)} - ${pos(p25)})"></div>
+          <div class="mb-dot" style="left:${pos(m.value)}" title="${fmtValue(m.value, m.unit)}"></div>
+        </div>
+        <div class="measure-val">
+          <b>${fmtValue(m.value, m.unit)}</b>
+          <small>Reference avg ${fmtValue(m.mean, m.unit)}</small>
+        </div>
+        <span class="measure-status">${STATUS_TEXT[m.status] || "—"}</span>
+      </div>`;
+    })
+    .join("");
+}
+
 function render(r) {
   currentResult = r;
+  renderScorecard(r);
+  renderMeasures(r);
   const brief = buildCoachBrief(r);
   const label =
     r.jersey != null && r.jersey !== ""
@@ -741,6 +855,13 @@ function renderCompare() {
     ["Player", (r) => (r.jersey != null ? `#${r.jersey}` : "OL")],
     ["Play", (r) => (r.play_type === "run" ? "Run" : "Pass")],
     ["Verdict", (r) => buildCoachBrief(r).verdict],
+    ...ATTR_ORDER.map(([key, label]) => [
+      label,
+      (r) => {
+        const a = (r.grades?.attributes || []).find((x) => x.key === key);
+        return a ? VERDICT_TEXT[a.verdict] || "Not sure" : "—";
+      },
+    ]),
     ["Top fix", (r) => buildCoachBrief(r).fix[0]?.title || "—"],
     ["Top strength", (r) => buildCoachBrief(r).keep[0]?.title || "—"],
     ["Knee bend (avg)", (r) => (r.mean_knee_flexion_deg != null ? `${Math.round(r.mean_knee_flexion_deg)}°` : "—")],

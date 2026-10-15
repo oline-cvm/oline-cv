@@ -194,6 +194,7 @@ def lock_ol_from_frames(
     frames: list,
     config: AnalysisConfig,
     sample_indices: list[int] | None = None,
+    detector=None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     if not frames:
         raise RuntimeError("No frames for OL lock")
@@ -206,7 +207,9 @@ def lock_ol_from_frames(
 
     # Prefer explicit jersey when requested (e.g. #76).
     if config.target_jersey is not None:
-        jersey_hit = _lock_by_jersey(model, frames, sample_indices, config, w, h)
+        n = len(frames)
+        jersey_idx = sorted({min(n - 1, i) for i in range(0, min(n, 91), 10)})
+        jersey_hit = _lock_by_jersey(detector or model, frames, jersey_idx, config, w, h)
         if jersey_hit is not None:
             return jersey_hit
 
@@ -216,7 +219,7 @@ def lock_ol_from_frames(
             frames[idx],
             verbose=False,
             conf=config.min_person_confidence,
-            imgsz=config.pose_imgsz,
+            imgsz=config.imgsz_for(frames[idx]),
         )
         if not results or results[0].keypoints is None or results[0].boxes is None:
             continue
@@ -284,8 +287,9 @@ def _lock_by_jersey(
         results = model.predict(
             frames[idx],
             verbose=False,
+            classes=[0],
             conf=config.min_person_confidence,
-            imgsz=config.pose_imgsz,
+            imgsz=config.imgsz_for(frames[idx]),
         )
         if not results or results[0].boxes is None or len(results[0].boxes) == 0:
             continue

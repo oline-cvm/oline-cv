@@ -94,9 +94,11 @@ def write_overlay_video(
             pose_draw = pose
 
         _draw_skeleton(img, pose_draw)
+        bridged = bool(getattr(pose, "interpolated", False))
         if pose_draw.bbox_xyxy is not None:
             b = pose_draw.bbox_xyxy.astype(int)
-            cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), (40, 200, 120), 2)
+            color = (60, 170, 240) if bridged else (40, 200, 120)
+            cv2.rectangle(img, (b[0], b[1]), (b[2], b[3]), color, 1 if bridged else 2)
 
         m = body_by_idx.get(pose.frame_idx)
         state = getattr(pose, "track_state", None) or ""
@@ -112,7 +114,9 @@ def write_overlay_video(
                 quicks.first_hip_movement_frame or -1
             ):
                 hud.append("GET-OFF")
-        if state == "LOST":
+        if bridged:
+            hud.append("OCCLUDED")
+        elif state == "LOST":
             hud.append("TRACK LOST")
         if m is not None and m.posture and m.posture != "unknown":
             hud.append(str(m.posture).replace("_", " ").upper())
@@ -190,6 +194,7 @@ def _remap_pose_to_zoom(
         track_confidence=float(getattr(pose, "track_confidence", 0.0) or 0.0),
         track_id=getattr(pose, "track_id", None),
         target_id=int(getattr(pose, "target_id", 1) or 1),
+        interpolated=bool(getattr(pose, "interpolated", False)),
     )
 
 

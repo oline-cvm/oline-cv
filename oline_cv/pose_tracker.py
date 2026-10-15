@@ -1,8 +1,12 @@
-"""YOLO-pose detection + separate identity association.
+"""Person detection, tracking of the tapped player, and top-down pose.
 
-Detection: Ultralytics YOLO-pose with BoT-SORT (GMC + optional ReID features).
-Identity: permanent target_id + frozen multi-frame appearance (classical, no NN train).
-Prefer LOST (no target) over transferring identity to another player.
+Default (``tracker_backend="deep_hm_sort"``): YOLO person detector, Deep
+HM-SORT multi-object tracking with ReID embeddings, and the OLINE
+locked-target identity layer on top (see ``oline_cv/tracking``).
+Deprecated (``"legacy_botsort"``): detector + BoT-SORT + whole-clip link, or
+the older per-frame associator when ``track_global_link=False``.
+Either way: prefer LOST (no target) over transferring identity to another
+player.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from oline_cv.association import (
 )
 from oline_cv.config import AnalysisConfig, KEYPOINT_NAMES
 from oline_cv.geometry import hip_mid
+from oline_cv.global_link import FrameCandidates, LinkParams, interpolate_boxes, link_target
 from oline_cv.ol_select import lock_ol_from_frames
 
 
@@ -60,6 +65,11 @@ class FramePose:
     track_confidence: float = 0.0
     track_id: int | None = None  # BoT-SORT id (may change); logical target is always permanent
     target_id: int = PERMANENT_TARGET_ID
+    # Box linearly filled across a short occlusion, not detected (keypoints are NaN).
+    interpolated: bool = False
+    # Deep HM-SORT backend only: locked-target state and association scores.
+    target_state: str | None = None
+    association: dict | None = None
 
 
 def _bbox_iou(a: np.ndarray, b: np.ndarray) -> float:
@@ -84,6 +94,32 @@ def _bbox_diag(b: np.ndarray) -> float:
     return float(np.linalg.norm(b[2:] - b[:2]))
 
 
+def _match_point(boxes: np.ndarray, p: np.ndarray, max_dist_h: float = 0.35) -> int | None:
+    """Detection a point (a tap) belongs to, or None.
+
+    Prefers boxes that contain the point; among overlapping boxes the one whose
+    centre is closest relative to its own size. Otherwise accepts only a box
+    within ``max_dist_h`` of its own height of the point.
+    """
+    if len(boxes) == 0:
+        return None
+    w = np.maximum(boxes[:, 2] - boxes[:, 0], 1.0)
+    h = np.maximum(boxes[:, 3] - boxes[:, 1], 1.0)
+    c = (boxes[:, :2] + boxes[:, 2:]) / 2.0
+    norm = np.hypot((p[0] - c[:, 0]) / w, (p[1] - c[:, 1]) / h)
+    inside = (
+        (p[0] >= boxes[:, 0]) & (p[0] <= boxes[:, 2]) & (p[1] >= boxes[:, 1]) & (p[1] <= boxes[:, 3])
+    )
+    if inside.any():
+        idx = np.nonzero(inside)[0]
+        return int(idx[np.argmin(norm[idx])])
+    gap_x = np.maximum(0.0, np.maximum(boxes[:, 0] - p[0], p[0] - boxes[:, 2]))
+    gap_y = np.maximum(0.0, np.maximum(boxes[:, 1] - p[1], p[1] - boxes[:, 3]))
+    gap = np.hypot(gap_x, gap_y) / h
+    i = int(np.argmin(gap))
+    return i if gap[i] <= max_dist_h else None
+
+
 class PoseTracker:
     def __init__(self, config: AnalysisConfig):
         self.config = config
@@ -93,6 +129,7 @@ class PoseTracker:
         if model_name in ("mediapipe-pose",):
             model_name = "yolov8m-pose.pt"
         self.model = YOLO(model_name)
+        self.detector = YOLO(os.environ.get("OLINE_DETECT_MODEL") or config.detect_model)
 
         self._anchor_center: np.ndarray | None = None
         self._anchor_bbox: np.ndarray | None = None
@@ -120,6 +157,17 @@ class PoseTracker:
             self.config.track_calib_mode = True
         elif calib in ("0", "false", "False"):
             self.config.track_calib_mode = False
+        backend = os.environ.get("OLINE_TRACKER_BACKEND", "").strip()
+        if backend:
+            self.config.tracker_backend = backend  # type: ignore[assignment]
+        if os.environ.get("OLINE_TRACK_DEBUG", "").strip() in ("1", "true", "True"):
+            self.config.debug_tracking = True
+        if self.config.tracker_backend not in ("deep_hm_sort", "legacy_botsort"):
+            raise ValueError(
+                f"tracker_backend must be 'deep_hm_sort' or 'legacy_botsort', "
+                f"got {self.config.tracker_backend!r}"
+            )
+        self.backend = self.config.tracker_backend
 
     def extract_all(
         self,
@@ -155,42 +203,18 @@ class PoseTracker:
                 _prog(4 + min(4.0, len(frames) / 80.0), f"Reading frames ({len(frames)})…", "ingest")
         cap.release()
 
-        # --- Step A: initial lock (selection only; not ongoing identity) ---
         _prog(10, "Locking offensive lineman…", "lock")
-        if self._pick_xy is not None:
-            self._anchor_center = np.array(
-                [self._pick_xy[0] * width, self._pick_xy[1] * height], dtype=float
-            )
-            cx, cy = self._anchor_center
-            self._anchor_bbox = np.array(
-                [cx - 60, cy - 100, cx + 60, cy + 100], dtype=float
-            )
-            self._lock_origin = self._anchor_center.copy()
-            self.lock_meta = {"method": "manual_pick_xy", "pick_xy": list(self._pick_xy)}
-            print(f"  OL lock: manual pick {self._pick_xy}", flush=True)
-            self._snap_lock_to_detection(frames[0] if frames else None)
-        else:
-            center, bbox, meta = lock_ol_from_frames(self.model, frames, self.config)
-            self._anchor_center = center
-            self._anchor_bbox = bbox
-            self._lock_origin = center.copy()
-            self.lock_meta = meta
-            method = meta.get("method")
-            if method == "jersey_ocr":
-                print(
-                    f"  OL lock: jersey_ocr #{meta.get('jersey')} "
-                    f"conf={meta.get('ocr_confidence', 0):.2f} "
-                    f"@ ({center[0]:.0f},{center[1]:.0f})",
-                    flush=True,
-                )
-            else:
-                score = meta.get("score")
-                score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "—"
-                print(
-                    f"  OL lock: {method} score={score_s} "
-                    f"@ ({center[0]:.0f},{center[1]:.0f})",
-                    flush=True,
-                )
+        self.lock_initial(frames, width, height)
+
+        if self.backend == "deep_hm_sort":
+            ol_poses, dl_poses = self._extract_deep_hm(frames, fps, _prog, video_path)
+            self.track_states = [p.track_state for p in ol_poses]
+            return self._finish(fps, frames, width, height, ol_poses, dl_poses)
+
+        if self.config.track_global_link:
+            ol_poses, dl_poses = self._extract_global(frames, fps, _prog)
+            self.track_states = [p.track_state for p in ol_poses]
+            return self._finish(fps, frames, width, height, ol_poses, dl_poses)
 
         # --- Frozen multi-frame appearance (no NN training) ---
         _prog(14, "Building frozen appearance reference…", "lock")
@@ -228,28 +252,550 @@ class PoseTracker:
 
         # Save frozen reference crops for debugging
         self._save_reference_crops()
+        self.lock_meta["tracker"] = "botsort+appearance_assoc"
+        return self._finish(fps, frames, width, height, ol_poses, dl_poses)
 
+    def lock_initial(self, frames: list[np.ndarray], width: int, height: int) -> None:
+        """Step A: initial lock (selection only; not ongoing identity)."""
+        if self._pick_xy is not None:
+            self._anchor_center = np.array(
+                [self._pick_xy[0] * width, self._pick_xy[1] * height], dtype=float
+            )
+            cx, cy = self._anchor_center
+            self._anchor_bbox = np.array(
+                [cx - 60, cy - 100, cx + 60, cy + 100], dtype=float
+            )
+            self._lock_origin = self._anchor_center.copy()
+            self.lock_meta = {"method": "manual_pick_xy", "pick_xy": list(self._pick_xy)}
+            print(f"  OL lock: manual pick {self._pick_xy}", flush=True)
+            if self.backend == "legacy_botsort" and not self.config.track_global_link:
+                self._snap_lock_to_detection(frames[0] if frames else None)
+        else:
+            center, bbox, meta = lock_ol_from_frames(self.model, frames, self.config)
+            self._anchor_center = center
+            self._anchor_bbox = bbox
+            self._lock_origin = center.copy()
+            self.lock_meta = meta
+            method = meta.get("method")
+            if method == "jersey_ocr":
+                print(
+                    f"  OL lock: jersey_ocr #{meta.get('jersey')} "
+                    f"conf={meta.get('ocr_confidence', 0):.2f} "
+                    f"@ ({center[0]:.0f},{center[1]:.0f})",
+                    flush=True,
+                )
+            else:
+                score = meta.get("score")
+                score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "—"
+                print(
+                    f"  OL lock: {method} score={score_s} "
+                    f"@ ({center[0]:.0f},{center[1]:.0f})",
+                    flush=True,
+                )
+
+    def _finish(self, fps, frames, width, height, ol_poses, dl_poses):
         lost_n = sum(1 for s in self.track_states if s == TrackState.LOST.value)
         self.lock_meta["target_id"] = PERMANENT_TARGET_ID
         self.lock_meta["frames_lost"] = lost_n
         self.lock_meta["identity_freeze"] = True
-        self.lock_meta["tracker"] = "botsort+appearance_assoc"
         return fps, len(frames), width, height, ol_poses, dl_poses, frames
+
+    def _detect_boxes(self, frame: np.ndarray, conf: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """All people in ``frame`` from the person detector: (boxes xyxy, confs)."""
+        results = self.detector.predict(
+            frame,
+            verbose=False,
+            classes=[0],
+            conf=self.config.min_person_confidence if conf is None else conf,
+            imgsz=self.config.imgsz_for(frame),
+        )
+        r0 = results[0] if results else None
+        if r0 is None or r0.boxes is None or len(r0.boxes) == 0:
+            return np.zeros((0, 4)), np.zeros(0)
+        return r0.boxes.xyxy.cpu().numpy().astype(float), r0.boxes.conf.cpu().numpy().astype(float)
+
+    def _detect_all(self, frames: list[np.ndarray], _prog) -> list[dict]:
+        """Pass 1: person detector + BoT-SORT on every frame; keep every box."""
+        if getattr(self.detector, "predictor", None) is not None:
+            self.detector.predictor = None  # fresh BoT-SORT state
+        raw: list[dict] = []
+        n_frames = max(1, len(frames))
+        for idx, frame in enumerate(frames):
+            results = self.detector.track(
+                frame,
+                persist=True,
+                tracker=BOTSORT_YAML,
+                verbose=False,
+                classes=[0],
+                conf=self.config.min_person_confidence,
+                imgsz=self.config.imgsz_for(frame),
+            )
+            r0 = results[0] if results else None
+            if r0 is None or r0.boxes is None or len(r0.boxes) == 0:
+                raw.append({"cands": FrameCandidates.empty()})
+            else:
+                boxes = r0.boxes.xyxy.cpu().numpy().astype(float)
+                confs = r0.boxes.conf.cpu().numpy().astype(float)
+                ids = (
+                    r0.boxes.id.cpu().numpy().astype(int)
+                    if r0.boxes.id is not None
+                    else np.full(len(confs), -1, dtype=int)
+                )
+                raw.append(
+                    {
+                        "cands": FrameCandidates(
+                            boxes=boxes, confs=confs, track_ids=ids, appearance=np.ones(len(confs))
+                        )
+                    }
+                )
+            if (idx + 1) % 10 == 0 or idx + 1 == n_frames:
+                _prog(16.0 + 44.0 * (idx + 1) / n_frames, f"Detecting players ({idx + 1}/{n_frames})…", "track")
+            if (idx + 1) % 30 == 0:
+                print(f"  detect {idx + 1} frames...", flush=True)
+        return raw
+
+    def _pick_frame(self, n_frames: int, fps: float) -> int:
+        t = self.config.athlete_pick_time_s
+        if t is None or fps <= 0:
+            return 0
+        return int(min(max(0, round(t * fps)), max(0, n_frames - 1)))
+
+    def _resolve_lock(self, cands: list[FrameCandidates], fps: float) -> tuple[int, int] | None:
+        """(frame, detection) of the locked player, or None if nobody is there.
+
+        A tap locks the box under the tap on the tapped frame (neighbouring
+        frames are tried if the detector blinked). It never falls back to the
+        nearest person elsewhere — that is how a referee gets locked.
+        """
+        if self._anchor_center is None or not cands:
+            return None
+        t0 = self._pick_frame(len(cands), fps)
+        span = max(2, int(round((fps if fps > 0 else 30.0) * 0.25)))
+        order = [t0] + [t for d in range(1, span + 1) for t in (t0 - d, t0 + d)]
+        for t in order:
+            if not (0 <= t < len(cands)) or len(cands[t]) == 0:
+                continue
+            i = _match_point(cands[t].boxes, self._anchor_center)
+            if i is not None:
+                return t, i
+        if self._pick_xy is not None:
+            return None
+        # Auto lock: first frame with a box close to the stance pick.
+        for t, c in enumerate(cands):
+            if len(c):
+                i = _match_point(c.boxes, self._anchor_center, max_dist_h=1.0)
+                return (t, i) if i is not None else None
+        return None
+
+    def _appearance_sims(
+        self, frames: list[np.ndarray], cands: list[FrameCandidates], lock_frame: int, lock_idx: int, fps: float
+    ) -> None:
+        """Freeze the locked player's look from his own BoT-SORT track, then
+        score every detection against it (fills ``cands[t].appearance``)."""
+        tid = int(cands[lock_frame].track_ids[lock_idx])
+        lock_box = cands[lock_frame].boxes[lock_idx]
+        horizon = max(8, int(round((fps if fps > 0 else 30.0) * 1.5)))
+        ref_frames, ref_boxes = [frames[lock_frame]], [lock_box]
+        if tid >= 0:
+            for t in np.linspace(lock_frame, min(len(frames) - 1, lock_frame + horizon), 5).astype(int)[1:]:
+                hits = np.nonzero(cands[t].track_ids == tid)[0]
+                if len(hits):
+                    ref_frames.append(frames[t])
+                    ref_boxes.append(cands[t].boxes[hits[0]])
+        ref = build_frozen_appearance(
+            ref_frames,
+            ref_boxes,
+            target_id=PERMANENT_TARGET_ID,
+            formation_xy=_bbox_center(lock_box),
+            lock_diag=_bbox_diag(lock_box),
+        )
+        if ref is None:
+            return
+        print(
+            f"  appearance: frozen from {len(ref.reference_crops)} crops of the locked player "
+            f"(self_sim={ref.self_similarity:.3f})",
+            flush=True,
+        )
+        self.lock_meta["frozen_self_similarity"] = float(ref.self_similarity)
+        for t, c in enumerate(cands):
+            for i, box in enumerate(c.boxes):
+                crop = crop_torso(frames[t], box)
+                c.appearance[i] = float(ref.appearance_sim(crop)) if crop is not None else 0.0
+
+    def _pose_in_box(self, frame: np.ndarray, box: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Top-down pose: run the pose model on an upscaled crop around ``box``
+        and keep the skeleton that best overlaps it. Missing → zeros (dropped
+        by ``_pack``)."""
+        import cv2
+
+        none = (np.zeros((17, 2)), np.zeros(17))
+        H, W = frame.shape[:2]
+        cx, cy = _bbox_center(box)
+        bw, bh = float(box[2] - box[0]), float(box[3] - box[1])
+        half = 0.65 * max(bh, 1.3 * bw, 16.0)
+        x0, y0 = int(max(0, cx - half)), int(max(0, cy - half))
+        x1, y1 = int(min(W, cx + half)), int(min(H, cy + half))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            return none
+        crop = frame[y0:y1, x0:x1]
+        size = self.config.pose_crop_px
+        scale = size / max(crop.shape[:2])
+        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
+        results = self.model.predict(crop, verbose=False, conf=0.1, imgsz=size)
+        r0 = results[0] if results else None
+        if r0 is None or r0.keypoints is None or r0.boxes is None or len(r0.boxes) == 0:
+            return none
+        off = np.array([x0, y0, x0, y0], dtype=float)
+        boxes = r0.boxes.xyxy.cpu().numpy() / scale + off
+        ious = [_bbox_iou(box, b) for b in boxes]
+        k = int(np.argmax(ious))
+        if ious[k] < 0.3:
+            return none
+        xy = r0.keypoints.xy.cpu().numpy()[k].copy()
+        kc = r0.keypoints.conf.cpu().numpy()[k] if r0.keypoints.conf is not None else np.ones(17)
+        missing = (xy[:, 0] <= 1.0) & (xy[:, 1] <= 1.0)
+        xy = xy / scale + np.array([x0, y0], dtype=float)
+        xy[missing] = 0.0
+        return xy, kc
+
+    def _extract_global(
+        self, frames: list[np.ndarray], fps: float, _prog, raw: list[dict] | None = None
+    ) -> tuple[list[FramePose], list[FramePose | None]]:
+        """Detect everyone, lock the tapped player, follow only his path over
+        the whole clip, then run pose on him (and his defender) alone."""
+        if raw is None:
+            raw = self._detect_all(frames, _prog)
+        cands = [r["cands"] for r in raw]
+
+        _prog(62, "Locking the selected player…", "track")
+        lock = self._resolve_lock(cands, fps)
+        if lock is None:
+            if self._pick_xy is not None:
+                raise RuntimeError(
+                    "No player was detected where you tapped. Tap directly on the player's body."
+                )
+            raise RuntimeError("Could not find an offensive lineman — tap the player to lock him.")
+        lock_frame, lock_idx = lock
+        lock_box = cands[lock_frame].boxes[lock_idx]
+        self._anchor_bbox = lock_box.astype(float).copy()
+        self._anchor_center = _bbox_center(self._anchor_bbox)
+        self._lock_origin = self._anchor_center.copy()
+        print(
+            f"  lock: frame {lock_frame}, box h={lock_box[3] - lock_box[1]:.0f}px "
+            f"@ ({self._anchor_center[0]:.0f},{self._anchor_center[1]:.0f})",
+            flush=True,
+        )
+        self._appearance_sims(frames, cands, lock_frame, lock_idx, fps)
+
+        _prog(66, "Following the selected player across the clip…", "track")
+        ol_poses: list[FramePose] = []
+        dl_poses: list[FramePose | None] = []
+        rate = fps if fps > 0 else 30.0
+        params = LinkParams(
+            max_gap_frames=max(30, int(round(rate * 1.5))),
+            max_speed_diag=self.config.track_max_speed_diag_s / rate,
+            max_gate_diag=1.0,
+            leash_h=self.config.track_leash_h,
+            w_leash=4.0,
+        )
+        result = link_target(cands, lock_frame, lock_idx, params)
+        short_gap = max(6, int(round(fps * self.config.track_interp_gap_s)))
+        filled = interpolate_boxes(cands, result.choice, short_gap)
+
+        prev_chosen = True
+        n_frames = max(1, len(frames))
+        for idx, j in enumerate(result.choice):
+            ts = (idx / fps) * 1000.0 if fps > 0 else 0.0
+            c = cands[idx]
+            if (idx + 1) % 10 == 0 or idx + 1 == n_frames:
+                _prog(66.0 + 6.0 * (idx + 1) / n_frames, f"Reading body position ({idx + 1}/{n_frames})…", "track")
+            if j is None:
+                pose = self._empty(idx, ts)
+                if idx in filled:
+                    pose.bbox_xyxy = filled[idx]
+                    pose.interpolated = True
+                ol_poses.append(pose)
+                dl_poses.append(None)
+                prev_chosen = False
+                continue
+            state = TrackState.TRACKED.value if prev_chosen else TrackState.REIDENTIFIED.value
+            tid = int(c.track_ids[j]) if c.track_ids[j] >= 0 else None
+            kxy, kcf = self._pose_in_box(frames[idx], c.boxes[j])
+            ol = self._pack(
+                idx, ts, kxy, kcf, c.boxes[j], float(c.confs[j]),
+                state=state, track_conf=float(c.appearance[j]), track_id=tid,
+            )
+            ol_poses.append(ol)
+            prev_chosen = True
+
+            dl = None
+            if self.config.track_defender and len(c) > 1:
+                dl_i = self._select_dl(c.boxes, c.confs, j)
+                if dl_i is not None:
+                    dxy, dcf = self._pose_in_box(frames[idx], c.boxes[dl_i])
+                    dl = self._pack(
+                        idx, ts, dxy, dcf, c.boxes[dl_i],
+                        float(c.confs[dl_i]), state=TrackState.TRACKED.value,
+                        track_conf=float(c.confs[dl_i]),
+                        track_id=int(c.track_ids[dl_i]) if c.track_ids[dl_i] >= 0 else None,
+                    )
+                    dc = _bbox_center(c.boxes[dl_i])
+                    self._dl_center = dc if self._dl_center is None else 0.7 * self._dl_center + 0.3 * dc
+            dl_poses.append(dl)
+
+        id_changes = sum(
+            1
+            for a, b in zip(ol_poses, ol_poses[1:])
+            if a.track_id is not None and b.track_id is not None and a.track_id != b.track_id
+        )
+        self.lock_meta["tracker"] = "detector+botsort+global_link"
+        self.lock_meta["anchor_bbox"] = [float(v) for v in lock_box]
+        self.lock_meta["global_link"] = {
+            **result.diagnostics,
+            "lock_frame": lock_frame,
+            "botsort_id_changes_followed": id_changes,
+            "interpolated_frames": len(filled),
+        }
+        print(
+            f"  global link: covered {result.diagnostics['covered']}/{result.diagnostics['frames']} "
+            f"frames, {len(filled)} interpolated, {id_changes} BoT-SORT id changes bridged",
+            flush=True,
+        )
+        return ol_poses, dl_poses
+
+    def _extract_deep_hm(
+        self, frames: list[np.ndarray], fps: float, _prog, video_path: str | None = None
+    ) -> tuple[list[FramePose], list[FramePose | None]]:
+        """Deep HM-SORT over every frame, then the locked-target layer decides
+        which tracklet (if any) is the tapped player in each frame."""
+        from oline_cv.tracking.deep_hm_sort import DeepHMSort
+        from oline_cv.tracking.reid import build_reid_extractor
+        from oline_cv.tracking.target_identity import run_target_identity
+
+        cfg = self.config.deep_hm
+        H, W = frames[0].shape[:2] if frames else (0, 0)
+        rate = fps if fps > 0 else 30.0
+        detect_model = os.environ.get("OLINE_DETECT_MODEL") or self.config.detect_model
+        reid = build_reid_extractor(cfg, detect_model)
+        tracker = DeepHMSort(cfg, rate, (W, H))
+        cmc = None
+        if cfg.camera_motion_compensation:
+            from oline_cv.tracking.camera_motion import CameraMotionEstimator
+
+            cmc = CameraMotionEstimator()
+        recover_at = min(cfg.detector_threshold, cfg.target_recovery_detection_threshold)
+        results = []
+        n_frames = max(1, len(frames))
+        for idx, frame in enumerate(frames):
+            boxes, confs = self._detect_boxes(frame, conf=recover_at)
+            emb = reid.extract(frame, boxes) if len(boxes) else None
+            strong = confs >= cfg.detector_threshold if len(confs) else np.zeros(0, dtype=bool)
+            cam = cmc.estimate(frame, boxes[strong] if len(boxes) else boxes) if cmc is not None else None
+            fr = tracker.update(
+                idx,
+                boxes[strong] if len(boxes) else boxes,
+                confs[strong] if len(confs) else confs,
+                None if emb is None or not np.any(strong) else emb[strong],
+                camera=cam,
+            )
+            weak = ~strong if len(confs) else np.zeros(0, dtype=bool)
+            if np.any(weak):
+                fr.append_recovery(boxes[weak], confs[weak], emb[weak])
+            results.append(fr)
+            if (idx + 1) % 10 == 0 or idx + 1 == n_frames:
+                _prog(16.0 + 44.0 * (idx + 1) / n_frames, f"Tracking players ({idx + 1}/{n_frames})…", "track")
+            if (idx + 1) % 30 == 0:
+                print(f"  deep_hm_sort {idx + 1} frames...", flush=True)
+
+        _prog(62, "Locking the selected player…", "track")
+        lock = self._resolve_lock(results, rate)
+        if lock is None:
+            if self._pick_xy is not None:
+                raise RuntimeError(
+                    "No player was detected where you tapped. Tap directly on the player's body."
+                )
+            raise RuntimeError("Could not find an offensive lineman — tap the player to lock him.")
+        lock_frame, lock_idx = lock
+        lock_box = results[lock_frame].boxes[lock_idx]
+        self._anchor_bbox = lock_box.astype(float).copy()
+        self._anchor_center = _bbox_center(self._anchor_bbox)
+        self._lock_origin = self._anchor_center.copy()
+
+        from oline_cv.tracking.target_mask import TargetMaskUnavailableError, build_target_mask_tracker
+
+        mask_tracker, seg_status = build_target_mask_tracker(cfg, frames)
+        if cfg.require_sam_if_configured and cfg.enable_target_segmentation and not seg_status.get("available"):
+            raise TargetMaskUnavailableError(seg_status.get("reason") or "SAM 2.1 is required but unavailable")
+        if cfg.enable_target_segmentation and not seg_status.get("available"):
+            print(
+                f"  WARNING: SAM 2.1 target segmentation is OFF ({seg_status.get('reason', 'unavailable')}). "
+                "Tracking mode=degraded — occlusion recovery will not run.",
+                flush=True,
+            )
+        if seg_status.get("available"):
+            _prog(64, "Seeding target mask…", "track")
+            print("  SAM 2.1: following the tapped player through the clip…", flush=True)
+            mask_tracker.initialize(frames, lock_frame, lock_box, (W, H))
+        else:
+            mask_tracker = None
+
+        targets, tmeta = run_target_identity(
+            results, lock_frame, lock_idx, cfg, rate, (W, H), cfg.target_bidirectional,
+            mask_tracker=mask_tracker,
+        )
+        _prog(66, "Reading body position…", "track")
+        ol_poses, dl_poses = self._poses_from_targets(frames, results, targets, rate, _prog)
+
+        boxed = [p for p in ol_poses if p.bbox_xyxy is not None and not p.interpolated]
+        id_changes = sum(
+            1 for a, b in zip(boxed, boxed[1:])
+            if a.track_id is not None and b.track_id is not None and a.track_id != b.track_id
+        )
+        reid_info = reid.describe()
+        mode = seg_status.get("tracking_mode") or "deep_hm_sort"
+        self.lock_meta["tracker"] = "deep_hm_sort+locked_target+sam2" if seg_status.get("available") else "deep_hm_sort+locked_target"
+        self.lock_meta["tracker_backend"] = "deep_hm_sort"
+        self.lock_meta["anchor_bbox"] = [float(v) for v in lock_box]
+        self.lock_meta["reid"] = reid_info
+        self.lock_meta["segmentation"] = {k: v for k, v in seg_status.items() if k != "reason"} | (
+            {"unavailable_reason": seg_status.get("reason")} if not seg_status.get("available") else {}
+        )
+        self.lock_meta["tracking_quality"] = {
+            "tracking_mode": mode,
+            "reid_mode": reid_info.get("quality") or reid_info.get("backend"),
+            "reid_backend": reid_info.get("backend"),
+            "target_segmentation_available": bool(seg_status.get("available")),
+            "target_segmentation_backend": seg_status.get("backend"),
+            "degraded": mode == "degraded",
+        }
+        if reid_info.get("quality") == "generic":
+            print(
+                "  WARNING: ReID is generic detector embeddings (not sports OSNet). "
+                "Set OLINE_REID_WEIGHTS for stronger identity.",
+                flush=True,
+            )
+        self.lock_meta["deep_hm_sort"] = tracker.summary()
+        self.lock_meta["target"] = {
+            **tmeta,
+            "lock_frame": lock_frame,
+            "lock_track_id": int(results[lock_frame].track_ids[lock_idx]),
+            "track_id_changes": id_changes,
+            "interpolated_frames": sum(1 for p in ol_poses if p.interpolated),
+        }
+        counts = tmeta["state_counts"]
+        print(
+            f"  deep_hm_sort: {tracker.summary()['tracklets']} tracklets, reid={reid_info['backend']} "
+            f"({reid_info['quality']}), seg={seg_status.get('backend')}/{mode}; "
+            f"target {counts}, {tmeta['reacquisitions']} reacquisitions",
+            flush=True,
+        )
+        if self.config.debug_tracking:
+            self._write_tracking_debug(video_path, frames, results, targets, rate)
+        return ol_poses, dl_poses
+
+    def _write_tracking_debug(self, video_path, frames, results, targets, fps) -> None:
+        from oline_cv.tracking.debug import write_debug_video, write_trace
+
+        root = Path(self.config.track_debug_dir) if self.config.track_debug_dir else (
+            Path(__file__).resolve().parent.parent / "outputs" / "track_debug"
+        )
+        stem = Path(video_path).stem if video_path else "clip"
+        header = {
+            "video": str(video_path) if video_path else None,
+            "fps": fps,
+            "config": self.config.to_dict()["deep_hm"],
+            "lock": {k: self.lock_meta.get(k) for k in ("method", "pick_xy", "anchor_bbox", "reid", "tracking_quality", "segmentation")},
+        }
+        trace = write_trace(root / f"{stem}_tracking.jsonl", results, targets, header)
+        tq = self.lock_meta.get("tracking_quality") or {}
+        video = write_debug_video(
+            root / f"{stem}_tracking_debug.mp4", frames, results, targets, fps,
+            overlay_info={"reid": tq.get("reid_backend"), "seg": tq.get("target_segmentation_backend")},
+        )
+        self.lock_meta["debug"] = {"trace": str(trace), "video": str(video) if video else None}
+        print(f"  tracking debug: {trace}  {video}", flush=True)
+
+    def _poses_from_targets(self, frames, results, targets, fps, _prog=None):
+        """FramePose / defender lists from locked-target frames.
+
+        Only VISIBLE_CONFIDENT (TRACKED) and REACQUIRED (REIDENTIFIED) frames
+        carry a box and pose; every other state is LOST with no box. Short
+        gaps between two boxed frames get an interpolated box (NaN keypoints,
+        not usable), as before.
+        """
+        from oline_cv.tracking.target_identity import TargetState
+
+        n = len(results)
+        boxed = [t for t in range(n) if targets[t] is not None and targets[t].has_box]
+        short_gap = max(6, int(round(fps * self.config.track_interp_gap_s)))
+        filled: dict[int, np.ndarray] = {}
+        for a, b in zip(boxed, boxed[1:]):
+            gap = b - a - 1
+            if 0 < gap <= short_gap:
+                ba, bb = targets[a].bbox, targets[b].bbox
+                for t in range(a + 1, b):
+                    w = (t - a) / (b - a)
+                    filled[t] = (1 - w) * ba + w * bb
+
+        ol_poses: list[FramePose] = []
+        dl_poses: list[FramePose | None] = []
+        for idx in range(n):
+            ts = (idx / fps) * 1000.0 if fps > 0 else 0.0
+            tf = targets[idx]
+            fr = results[idx]
+            if _prog is not None and ((idx + 1) % 10 == 0 or idx + 1 == n):
+                _prog(66.0 + 6.0 * (idx + 1) / max(1, n), f"Reading body position ({idx + 1}/{n})…", "track")
+            assoc = None if tf is None else {
+                k: v for k, v in tf.to_dict().items()
+                if k in ("cost", "d_iou", "d_app", "margin", "frames_since_seen", "reason",
+                         "appearance_updated", "risk", "sam_active", "sam_mask_available",
+                         "mask_coverage", "recovery")
+            }
+            if tf is None or not tf.has_box:
+                pose = self._empty(idx, ts)
+                pose.target_state = None if tf is None else tf.state.value
+                pose.association = assoc
+                if idx in filled:
+                    pose.bbox_xyxy = filled[idx]
+                    pose.interpolated = True
+                ol_poses.append(pose)
+                dl_poses.append(None)
+                continue
+            j = tf.det_index
+            state = (TrackState.REIDENTIFIED.value if tf.state == TargetState.REACQUIRED
+                     else TrackState.TRACKED.value)
+            kxy, kcf = self._pose_in_box(frames[idx], fr.boxes[j])
+            ol = self._pack(
+                idx, ts, kxy, kcf, fr.boxes[j], float(fr.scores[j]), state=state,
+                track_conf=float(max(0.0, 1.0 - (tf.cost or 0.0))), track_id=tf.track_id,
+            )
+            ol.target_state = tf.state.value
+            ol.association = assoc
+            ol_poses.append(ol)
+
+            dl = None
+            if self.config.track_defender and len(fr) > 1:
+                dl_i = self._select_dl(fr.boxes, fr.scores, j)
+                if dl_i is not None:
+                    dxy, dcf = self._pose_in_box(frames[idx], fr.boxes[dl_i])
+                    dtid = int(fr.track_ids[dl_i])
+                    dl = self._pack(
+                        idx, ts, dxy, dcf, fr.boxes[dl_i], float(fr.scores[dl_i]),
+                        state=TrackState.TRACKED.value, track_conf=float(fr.scores[dl_i]),
+                        track_id=dtid if dtid >= 0 else None,
+                    )
+                    dc = _bbox_center(fr.boxes[dl_i])
+                    self._dl_center = dc if self._dl_center is None else 0.7 * self._dl_center + 0.3 * dc
+            dl_poses.append(dl)
+        return ol_poses, dl_poses
 
     def _snap_lock_to_detection(self, frame: np.ndarray | None) -> None:
         if frame is None or self._anchor_center is None:
             return
-        results = self.model.predict(
-            frame,
-            verbose=False,
-            conf=self.config.min_person_confidence,
-            imgsz=self.config.pose_imgsz,
-        )
-        if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+        boxes, _ = self._detect_boxes(frame)
+        i = _match_point(boxes, self._anchor_center)
+        if i is None:
             return
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        centers = (boxes[:, :2] + boxes[:, 2:]) / 2.0
-        i = int(np.argmin(np.linalg.norm(centers - self._anchor_center[None, :], axis=1)))
         self._anchor_bbox = boxes[i].astype(float)
         self._anchor_center = _bbox_center(self._anchor_bbox)
         self._lock_origin = self._anchor_center.copy()
@@ -269,15 +815,9 @@ class PoseTracker:
         ref_boxes: list[np.ndarray] = []
         for i in idxs:
             frame = frames[i]
-            results = self.model.predict(
-                frame,
-                verbose=False,
-                conf=self.config.min_person_confidence,
-                imgsz=self.config.pose_imgsz,
-            )
-            if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+            boxes, _ = self._detect_boxes(frame)
+            if len(boxes) == 0:
                 continue
-            boxes = results[0].boxes.xyxy.cpu().numpy()
             centers = (boxes[:, :2] + boxes[:, 2:]) / 2.0
             j = int(np.argmin(np.linalg.norm(centers - self._anchor_center[None, :], axis=1)))
             # Only keep if still near lock origin (don't grab neighbor on later sample)
@@ -445,7 +985,7 @@ class PoseTracker:
             tracker=BOTSORT_YAML,
             verbose=False,
             conf=self.config.min_person_confidence,
-            imgsz=self.config.pose_imgsz,
+            imgsz=self.config.imgsz_for(frame),
         )
         if not results:
             return self._empty(idx, ts), None
